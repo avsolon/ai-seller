@@ -1,0 +1,30 @@
+{
+  "name": "Fara Line",
+  "legal_name": "ИП Касьянов Ростислав Александрович",
+  "legal_address": "663600, Красноярский край, Канский район, д. Хаёрино, ул. Советская, д.21",
+  "inn": "245014733907",
+  "ogrnip": "323246800007659",
+  "location": "г. Новосибирск",
+  "contacts": {
+    "phone": "+7 993 016 17 80",
+    "email": "connect.faraline@gmail.com",
+    "telegram": "http://t.me/faralineru",
+    "whatsapp": "https://wa.me/message/AC6Y5JT2UOOJN1?src=qr",
+    "youtube": "https://www.youtube.com/@faralineru",
+    "vk": "https://vk.com/fara_line"
+  },
+  "working_hours": {
+    "sales_department": {
+      "days": "Пн - Пт",
+      "time": "10:00 - 22:00",
+      "weekend": "Суббота, Воскресенье - выходной"
+    },
+    "service_center": {
+      "status": "Временно не работает"
+    }
+  },
+  "address": {
+    "office": "пл. Карла Маркса 7, БЦ Сан Сити, г. Новосибирск"
+  },
+  "delivery": "Бесплатная доставка по всей России и СНГ для розничных клиентов"
+}
