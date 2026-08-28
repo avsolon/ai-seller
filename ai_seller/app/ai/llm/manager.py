@@ -1,0 +1,391 @@
+"""LLM Manager - manages LLM providers and generation."""
+
+from typing import Any, Dict, Optional, Union
+from dataclasses import dataclass
+
+from app.core.config import settings
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+@dataclass
+class LLMResponse:
+    """Response from LLM."""
+    text: str
+    provider: str
+    model: str
+    tokens_input: int
+    tokens_output: int
+    latency_ms: float
+    metadata: Dict[str, Any]
+
+
+class LLMProvider:
+    """Base LLM Provider interface."""
+
+    def __init__(self, name: str):
+        """Initialize provider."""
+        self.name = name
+
+    async def generate(
+        self,
+        prompt: str,
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Generate text using the LLM."""
+        raise NotImplementedError("generate method must be implemented")
+
+    async def chat(
+        self,
+        messages: list,
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Generate text using chat interface."""
+        raise NotImplementedError("chat method must be implemented")
+
+
+class OllamaProvider(LLMProvider):
+    """Ollama LLM Provider."""
+
+    def __init__(self):
+        """Initialize Ollama provider."""
+        super().__init__("ollama")
+        self.base_url = settings.ollama_base_url
+        self.default_model = settings.ollama_default_model
+
+    async def generate(
+        self,
+        prompt: str,
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        model: Optional[str] = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Generate text using Ollama."""
+        import httpx
+        import time
+        
+        model = model or self.default_model
+        
+        start_time = time.time()
+        
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    f"{self.base_url}/api/generate",
+                    json={
+                        "model": model,
+                        "prompt": prompt,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        "stream": False,
+                        **kwargs,
+                    },
+                )
+                
+                if response.status_code != 200:
+                    raise Exception(f"Ollama error: {response.status_code} - {response.text}")
+                
+                data = response.json()
+                
+                latency_ms = (time.time() - start_time) * 1000
+                
+                return LLMResponse(
+                    text=data.get("response", ""),
+                    provider=self.name,
+                    model=model,
+                    tokens_input=data.get("prompt_token_count", 0),
+                    tokens_output=data.get("response_token_count", 0),
+                    latency_ms=latency_ms,
+                    metadata={
+                        "total_duration": data.get("total_duration"),
+                        "load_duration": data.get("load_duration"),
+                        "eval_count": data.get("eval_count"),
+                    },
+                )
+                
+        except Exception as e:
+            logger.error(f"Ollama generation error: {e}")
+            raise
+
+    async def chat(
+        self,
+        messages: list,
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        model: Optional[str] = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Generate text using Ollama chat interface."""
+        import httpx
+        import time
+        
+        model = model or self.default_model
+        
+        start_time = time.time()
+        
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    f"{self.base_url}/api/chat",
+                    json={
+                        "model": model,
+                        "messages": messages,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        "stream": False,
+                        **kwargs,
+                    },
+                )
+                
+                if response.status_code != 200:
+                    raise Exception(f"Ollama error: {response.status_code} - {response.text}")
+                
+                data = response.json()
+                
+                latency_ms = (time.time() - start_time) * 1000
+                
+                return LLMResponse(
+                    text=data.get("message", {}).get("content", ""),
+                    provider=self.name,
+                    model=model,
+                    tokens_input=data.get("prompt_token_count", 0),
+                    tokens_output=data.get("response_token_count", 0),
+                    latency_ms=latency_ms,
+                    metadata={
+                        "total_duration": data.get("total_duration"),
+                        "load_duration": data.get("load_duration"),
+                        "eval_count": data.get("eval_count"),
+                    },
+                )
+                
+        except Exception as e:
+            logger.error(f"Ollama chat error: {e}")
+            raise
+
+
+class GigaChatProvider(LLMProvider):
+    """GigaChat LLM Provider."""
+
+    def __init__(self):
+        """Initialize GigaChat provider."""
+        super().__init__("gigachat")
+        self.api_key = settings.gigachat_api_key
+        self.api_url = settings.gigachat_url
+        self.auth_url = settings.gigachat_auth_url
+        self.scope = settings.gigachat_scope
+        self.access_token: Optional[str] = None
+
+    async def _get_access_token(self) -> str:
+        """Get GigaChat access token."""
+        if self.access_token:
+            return self.access_token
+        
+        import httpx
+        import base64
+        
+        try:
+            # Encode credentials
+            auth_string = f"{self.api_key}:"
+            auth_bytes = auth_string.encode("utf-8")
+            auth_base64 = base64.b64encode(auth_bytes).decode("utf-8")
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    self.auth_url,
+                    headers={
+                        "Authorization": f"Basic {auth_base64}",
+                        "Content-Type": "application/x-www-form-urlencoded",
+                    },
+                    data=f"scope={self.scope}",
+                )
+                
+                if response.status_code != 200:
+                    raise Exception(f"GigaChat auth error: {response.status_code} - {response.text}")
+                
+                data = response.json()
+                self.access_token = data.get("access_token")
+                return self.access_token
+                
+        except Exception as e:
+            logger.error(f"GigaChat auth error: {e}")
+            raise
+
+    async def generate(
+        self,
+        prompt: str,
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        model: Optional[str] = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Generate text using GigaChat."""
+        import httpx
+        import time
+        
+        access_token = await self._get_access_token()
+        model = model or "GigaChat"
+        
+        start_time = time.time()
+        
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    f"{self.api_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        **kwargs,
+                    },
+                )
+                
+                if response.status_code != 200:
+                    raise Exception(f"GigaChat error: {response.status_code} - {response.text}")
+                
+                data = response.json()
+                
+                latency_ms = (time.time() - start_time) * 1000
+                
+                # Extract usage info
+                usage = data.get("usage", {})
+                
+                return LLMResponse(
+                    text=data.get("choices", [{}])[0].get("message", {}).get("content", ""),
+                    provider=self.name,
+                    model=model,
+                    tokens_input=usage.get("prompt_tokens", 0),
+                    tokens_output=usage.get("completion_tokens", 0),
+                    latency_ms=latency_ms,
+                    metadata={
+                        "total_tokens": usage.get("total_tokens", 0),
+                    },
+                )
+                
+        except Exception as e:
+            logger.error(f"GigaChat generation error: {e}")
+            raise
+
+    async def chat(
+        self,
+        messages: list,
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        model: Optional[str] = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Generate text using GigaChat chat interface."""
+        # GigaChat uses the same endpoint for chat
+        return await self.generate(
+            prompt=messages[-1]["content"] if messages else "",
+            temperature=temperature,
+            max_tokens=max_tokens,
+            model=model,
+            **kwargs,
+        )
+
+
+class LLMManager:
+    """Manages multiple LLM providers."""
+
+    def __init__(self):
+        """Initialize LLM manager."""
+        self.providers: Dict[str, LLMProvider] = {
+            "ollama": OllamaProvider(),
+            "gigachat": GigaChatProvider(),
+        }
+        self.primary_provider = settings.llm_provider
+        self.fallback_provider = "ollama" if self.primary_provider != "ollama" else "gigachat"
+
+    def get_provider(self, provider_name: Optional[str] = None) -> LLMProvider:
+        """Get LLM provider by name."""
+        provider_name = provider_name or self.primary_provider
+        
+        if provider_name not in self.providers:
+            raise ValueError(f"Unknown provider: {provider_name}")
+        
+        return self.providers[provider_name]
+
+    async def generate(
+        self,
+        prompt: str,
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        provider: Optional[str] = None,
+        use_fallback: bool = True,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Generate text using the specified provider."""
+        try:
+            provider_obj = self.get_provider(provider)
+            return await provider_obj.generate(
+                prompt=prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                **kwargs,
+            )
+        except Exception as e:
+            logger.error(f"Primary provider error: {e}")
+            
+            if use_fallback:
+                try:
+                    fallback_provider = self.get_provider(self.fallback_provider)
+                    logger.info(f"Falling back to {self.fallback_provider}")
+                    return await fallback_provider.generate(
+                        prompt=prompt,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        **kwargs,
+                    )
+                except Exception as fallback_error:
+                    logger.error(f"Fallback provider error: {fallback_error}")
+                    raise
+            else:
+                raise
+
+    async def chat(
+        self,
+        messages: list,
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        provider: Optional[str] = None,
+        use_fallback: bool = True,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Generate text using chat interface."""
+        try:
+            provider_obj = self.get_provider(provider)
+            return await provider_obj.chat(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                **kwargs,
+            )
+        except Exception as e:
+            logger.error(f"Primary provider chat error: {e}")
+            
+            if use_fallback:
+                try:
+                    fallback_provider = self.get_provider(self.fallback_provider)
+                    logger.info(f"Falling back to {self.fallback_provider}")
+                    return await fallback_provider.chat(
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        **kwargs,
+                    )
+                except Exception as fallback_error:
+                    logger.error(f"Fallback provider chat error: {fallback_error}")
+                    raise
+            else:
+                raise
