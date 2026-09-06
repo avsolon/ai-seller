@@ -1,5 +1,6 @@
 """Prompt Builder - builds prompts for LLM based on context."""
 
+import json
 from typing import Any, Dict, List, Optional
 
 from app.core.config import settings
@@ -242,27 +243,66 @@ class PromptBuilder:
         
         return "\n".join(parts) if parts else ""
 
+    def _parse_json_list(self, value: Any) -> List[str]:
+        """Parse a JSON-encoded list or return a plain list of strings."""
+        if isinstance(value, list):
+            return [str(item) for item in value]
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, list):
+                    return [str(item) for item in parsed]
+            except (ValueError, TypeError):
+                pass
+        return []
+
     def _format_rag_context(self, rag_context: Dict[str, Any]) -> str:
         """Format RAG context."""
         parts = []
-        
+
         # Knowledge context
         knowledge = rag_context.get("knowledge", [])
         if knowledge:
-            parts.append("Знания по товарам:")
+            parts.append("Знания (факты из базы знаний — используй только их, не выдумывай):")
             for item in knowledge[:3]:  # Top 3
-                parts.append(f"- {item.get('content', '')[:100]}...")
-        
+                content = (item.get("content") or item.get("text") or "").strip()
+                if content:
+                    parts.append(f"- {content[:400]}")
+
         # Sales patterns context
         sales_patterns = rag_context.get("sales_patterns", [])
         if sales_patterns:
-            parts.append("\nПаттерны продаж:")
-            for pattern in sales_patterns[:3]:  # Top 3
-                dialogue = pattern.get("dialogue", [])
-                if dialogue:
-                    first_message = dialogue[0].get("text", "")
-                    parts.append(f"- {first_message[:100]}...")
-        
+            parts.append("\nПоведенческие паттерны продавца (Sales RAG):")
+            parts.append("Не копируй их дословно — перенимай подход, тон и логику диалога.")
+            for idx, pattern in enumerate(sales_patterns[:3], start=1):  # Top 3
+                label = pattern.get("label", "positive")
+                header = f"Паттерн {idx}"
+                if label == "negative":
+                    header += " — ПРИМЕР НЕПРАВИЛЬНОГО ОТВЕТА, так делать нельзя"
+                parts.append(header)
+
+                dialogue = pattern.get("dialogue")
+                if isinstance(dialogue, str):
+                    try:
+                        dialogue = json.loads(dialogue)
+                    except (ValueError, TypeError):
+                        dialogue = None
+
+                if isinstance(dialogue, list):
+                    for msg in dialogue[:6]:
+                        role = "Клиент" if msg.get("role") == "customer" else "Продавец"
+                        text = (msg.get("text") or "").strip()
+                        if text:
+                            parts.append(f"  {role}: {text[:220]}")
+
+                strategy = self._parse_json_list(pattern.get("successful_strategy"))
+                if strategy:
+                    parts.append(f"  Стратегия: {', '.join(strategy[:6])}")
+
+                mistakes = self._parse_json_list(pattern.get("mistakes_to_avoid"))
+                if mistakes:
+                    parts.append(f"  Чего избегать: {', '.join(mistakes[:6])}")
+
         return "\n".join(parts) if parts else ""
 
     def _format_product_context(self, product_context: Dict[str, Any]) -> str:

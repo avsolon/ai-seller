@@ -1,0 +1,138 @@
+version: "1.0"
+domain:
+  name: "led_lens_sales"
+  language: "ru"
+  product: "LED/BI-LED линзы и комплектующие для автомобильной оптики"
+
+sales_funnel:
+  - NEW
+  - DISCOVERY
+  - NEED_IDENTIFIED
+  - VEHICLE_QUALIFICATION
+  - PRODUCT_SELECTION
+  - COMPARISON
+  - OBJECTION
+  - TRUST_BUILDING
+  - PRODUCT_INFO
+  - CLOSING
+  - ORDER
+  - HANDOFF
+  - POST_SALE
+
+customer_intents:
+  GREETING: "Начало общения / запрос помощи."
+  VEHICLE_INFO: "Марка, модель, год или конфигурация автомобиля."
+  NEED_DISCOVERY: "Выявление задачи: яркость, дальность, ширина, город/трасса, установка."
+  VEHICLE_COMPATIBILITY: "Проверка совместимости с конкретной фарой."
+  PRODUCT_RECOMMENDATION: "Выбор модели под потребность."
+  PRODUCT_COMPARISON: "Сравнение конкретных моделей."
+  PRICE_QUERY: "Запрос актуальной цены."
+  PRICE_OBJECTION: "Возражение по цене, скидке или более дешёвому предложению."
+  TRUST_OBJECTION: "Сомнения в качестве, магазине, гарантии или результате."
+  DELIVERY_QUERY: "Наличие, доставка, сроки и получение."
+  WARRANTY_QUERY: "Гарантия и возврат."
+  INSTALLATION_QUERY: "Монтаж, крепления и комплектующие."
+  PURCHASE_INTENT: "Явный сигнал готовности купить."
+  ORDER_REQUEST: "Запрос оформления заказа / оплаты."
+  HESITATION: "Клиент хочет подумать или посоветоваться."
+  HANDOFF_REQUEST: "Нужен человек или экспертная проверка."
+
+customer_emotions:
+  neutral: "Обычный информационный запрос."
+  curious: "Интерес к продукту."
+  interested: "Высокая вовлечённость."
+  skeptical: "Сомнение или недоверие."
+  price_sensitive: "Высокая чувствительность к цене."
+  frustrated: "Недовольство текущим светом/опытом."
+  urgent: "Нужно быстро."
+  ready_to_buy: "Высокая готовность к покупке."
+  confused: "Клиент не ориентируется в товаре."
+
+customer_types:
+  general: "Розничный покупатель."
+  novice: "Клиент без технических знаний."
+  enthusiast: "Автолюбитель, интересующийся характеристиками."
+  professional_buyer: "Установщик, сервис или оптовый клиент."
+  returning_customer: "Повторный клиент."
+
+discovery_slots:
+  vehicle_make: {required: true}
+  vehicle_model: {required: true}
+  vehicle_year: {required: true}
+  headlight_type: {required: false}
+  current_lens: {required: false}
+  primary_need: {required: true}
+  budget: {required: false}
+  installation_mode: {required: false}
+  quantity: {required: false}
+  urgency: {required: false}
+
+seller_behavior:
+  principles:
+    - "Сначала понять задачу, потом продавать."
+    - "Задавать минимум необходимых вопросов."
+    - "Предпочитать один вопрос за ход."
+    - "Связывать рекомендацию с потребностью клиента."
+    - "Не выдумывать характеристики, цену, наличие, гарантию или сроки."
+    - "Не обещать совместимость без достаточных данных."
+    - "Не атаковать конкурентов."
+    - "Не давить на клиента при сомнении."
+    - "При неопределённости запрашивать фото/маркировку или делать handoff."
+    - "При готовности к покупке быстро переходить к оформлению."
+  tone: "живой, спокойный, уверенный, доброжелательный"
+  answer_length: "короткий или средний"
+  jargon: "только необходимый"
+  personalization: true
+  repetition: false
+
+sales_policy:
+  product_facts: {source: "verified_product_catalog", hallucination_allowed: false}
+  price: {source: "live_catalog_or_backend", hallucination_allowed: false}
+  stock: {source: "inventory", hallucination_allowed: false}
+  delivery: {source: "store_delivery_rules", hallucination_allowed: false}
+  warranty: {source: "store_policy", hallucination_allowed: false}
+  compatibility: {source: "verified_fitment_data", hallucination_allowed: false}
+
+rag_retrieval:
+  top_k: 5
+  rerank: true
+  metadata_filters: [scenario, sales_stage, intent, emotion, customer_type, tags]
+  preference_order:
+    - same_intent
+    - same_sales_stage
+    - same_emotion
+    - same_customer_type
+    - similar_dialogue_pattern
+  negative_examples:
+    use_for: "anti-pattern detection and regression tests"
+    never_copy_as_response: true
+
+evaluation:
+  dimensions:
+    intent_detection: 0.15
+    context_understanding: 0.15
+    discovery_quality: 0.15
+    recommendation_relevance: 0.15
+    factual_grounding: 0.20
+    objection_handling: 0.10
+    sales_progression: 0.05
+    tone: 0.05
+  critical_failures:
+    - fabricated_product_fact
+    - fabricated_price
+    - fabricated_stock
+    - fabricated_delivery
+    - fabricated_warranty
+    - false_compatibility_claim
+    - aggressive_pressure
+    - competitor_defamation
+  pass_threshold: 0.80
+  critical_failure_max: 0
+
+channels:
+  telegram:
+    interface: "bot"
+  website:
+    interface: "embeddable_widget"
+    transport: "HTTP/WebSocket"
+  shared_behavior: true

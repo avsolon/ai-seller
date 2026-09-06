@@ -1,17 +1,29 @@
 """Product models."""
 
+from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 from uuid import UUID
 
-from sqlalchemy import Boolean, Integer, JSON, Numeric, String, Text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.infrastructure.database.base import Base, TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:
     from app.infrastructure.database.models.shop import Shop
-    from app.infrastructure.database.models.conversation import Conversation
-    from app.infrastructure.database.models.sales import Recommendation, Order, OrderItem
+    from app.infrastructure.database.models.sales import Recommendation, OrderItem
 
 
 class Product(Base, UUIDMixin, TimestampMixin):
@@ -19,7 +31,9 @@ class Product(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "products"
 
-    shop_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
+    shop_id: Mapped[UUID] = mapped_column(
+        ForeignKey("shops.id"), index=True, nullable=False
+    )
     sku: Mapped[str] = mapped_column(String(100), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     slug: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -48,12 +62,10 @@ class Product(Base, UUIDMixin, TimestampMixin):
     )
 
     __table_args__ = (
-        # Unique constraint for SKU per shop
-        {"ix_products_shop_sku": True},
-        # Unique constraint for slug per shop
-        {"ix_products_shop_slug": True},
-        # Index for active products
-        {"ix_products_active": True},
+        UniqueConstraint("shop_id", "sku", name="uq_products_shop_sku"),
+        UniqueConstraint("shop_id", "slug", name="uq_products_shop_slug"),
+        Index("ix_products_shop_active", "shop_id", "is_active"),
+        Index("ix_products_category", "category"),
     )
 
     def __repr__(self) -> str:
@@ -65,7 +77,9 @@ class ProductVariant(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "product_variants"
 
-    product_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
+    product_id: Mapped[UUID] = mapped_column(
+        ForeignKey("products.id"), index=True, nullable=False
+    )
     sku: Mapped[str] = mapped_column(String(100), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     price: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
@@ -86,8 +100,8 @@ class ProductVariant(Base, UUIDMixin, TimestampMixin):
     )
 
     __table_args__ = (
-        # Unique constraint for SKU per product
-        {"ix_product_variants_product_sku": True},
+        UniqueConstraint("product_id", "sku", name="uq_product_variants_product_sku"),
+        Index("ix_product_variants_product_active", "product_id", "is_active"),
     )
 
     def __repr__(self) -> str:
@@ -114,8 +128,11 @@ class Vehicle(Base, UUIDMixin, TimestampMixin):
     )
 
     __table_args__ = (
-        # Unique constraint for vehicle
-        {"ix_vehicles_brand_model": True},
+        UniqueConstraint(
+            "brand", "model", "generation", "year_from", "year_to",
+            name="uq_vehicles_brand_model_generation",
+        ),
+        Index("ix_vehicles_brand_model", "brand", "model"),
     )
 
     def __repr__(self) -> str:
@@ -135,9 +152,15 @@ class Compatibility(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "compatibilities"
 
-    product_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
-    vehicle_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
-    variant_id: Mapped[Optional[UUID]] = mapped_column(nullable=True)
+    product_id: Mapped[UUID] = mapped_column(
+        ForeignKey("products.id"), index=True, nullable=False
+    )
+    vehicle_id: Mapped[UUID] = mapped_column(
+        ForeignKey("vehicles.id"), index=True, nullable=False
+    )
+    variant_id: Mapped[Optional[UUID]] = mapped_column(
+        ForeignKey("product_variants.id"), nullable=True
+    )
     type: Mapped[str] = mapped_column(String(50), default=CompatibilityType.DIRECT, nullable=False)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     is_confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -150,9 +173,51 @@ class Compatibility(Base, UUIDMixin, TimestampMixin):
     vehicle: Mapped["Vehicle"] = relationship("Vehicle", back_populates="compatibilities")
 
     __table_args__ = (
-        # Unique constraint for product-vehicle compatibility
-        {"ix_compatibilities_product_vehicle": True},
+        UniqueConstraint("product_id", "vehicle_id", name="uq_compatibilities_product_vehicle"),
     )
 
     def __repr__(self) -> str:
         return f"<Compatibility(id={self.id}, product_id={self.product_id}, vehicle_id={self.vehicle_id})>"
+
+
+class ProductPrice(Base, UUIDMixin, TimestampMixin):
+    """Current/historical product price (doc 9: price is separate from Product)."""
+
+    __tablename__ = "product_prices"
+
+    product_id: Mapped[UUID] = mapped_column(
+        ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    price: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), default="RUB", nullable=False)
+    valid_from: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    valid_to: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    product: Mapped["Product"] = relationship(
+        "Product", foreign_keys=[product_id]
+    )
+
+    def __repr__(self) -> str:
+        return f"<ProductPrice(id={self.id}, product_id={self.product_id}, price={self.price})>"
+
+
+class ProductInventory(Base, UUIDMixin, TimestampMixin):
+    """Current stock of a product (doc 9: inventory is separate from Product)."""
+
+    __tablename__ = "product_inventory"
+
+    product_id: Mapped[UUID] = mapped_column(
+        ForeignKey("products.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    quantity: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    # Relationships
+    product: Mapped["Product"] = relationship(
+        "Product", foreign_keys=[product_id]
+    )
+
+    def __repr__(self) -> str:
+        return f"<ProductInventory(id={self.id}, product_id={self.product_id}, qty={self.quantity})>"

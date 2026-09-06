@@ -4,7 +4,6 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-import redis.asyncio as redis
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,10 +20,12 @@ class ConversationMemory:
 
     def __init__(self):
         """Initialize conversation memory."""
-        self.redis: Optional[redis.Redis] = None
+        self.redis: Optional[Any] = None
 
     async def initialize(self) -> None:
         """Initialize Redis connection."""
+        import redis.asyncio as redis  # lazy import: redis is an optional runtime dependency
+
         self.redis = redis.from_url(settings.redis_url, decode_responses=True)
 
     async def close(self) -> None:

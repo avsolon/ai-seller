@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 from uuid import UUID
 
-from sqlalchemy import DateTime, JSON, String, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Numeric, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.infrastructure.database.base import Base, TimestampMixin, UUIDMixin
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from app.infrastructure.database.models.shop import Shop
     from app.infrastructure.database.models.conversation import Conversation
     from app.infrastructure.database.models.sales import Recommendation, Lead, Order
-    from app.infrastructure.database.models.vehicle import Vehicle
+    from app.infrastructure.database.models.product import Vehicle
 
 
 class Customer(Base, UUIDMixin, TimestampMixin):
@@ -21,7 +21,9 @@ class Customer(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "customers"
 
-    shop_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
+    shop_id: Mapped[UUID] = mapped_column(
+        ForeignKey("shops.id"), index=True, nullable=False
+    )
     name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True)
     email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
@@ -35,6 +37,9 @@ class Customer(Base, UUIDMixin, TimestampMixin):
     shop: Mapped["Shop"] = relationship("Shop", back_populates="customers")
     profile: Mapped[Optional["CustomerProfile"]] = relationship(
         "CustomerProfile", back_populates="customer", uselist=False, cascade="all, delete-orphan"
+    )
+    external_ids: Mapped[List["CustomerExternalID"]] = relationship(
+        "CustomerExternalID", back_populates="customer", cascade="all, delete-orphan"
     )
     conversations: Mapped[List["Conversation"]] = relationship(
         "Conversation", back_populates="customer", cascade="all, delete-orphan"
@@ -50,12 +55,33 @@ class Customer(Base, UUIDMixin, TimestampMixin):
     )
 
     __table_args__ = (
-        # Unique constraint for telegram user per shop
-        {"ix_customers_telegram_unique": True},
+        UniqueConstraint("shop_id", "telegram_user_id", name="uq_customers_shop_telegram"),
     )
 
     def __repr__(self) -> str:
         return f"<Customer(id={self.id}, name={self.name}, telegram_user_id={self.telegram_user_id})>"
+
+
+class CustomerExternalID(Base, UUIDMixin, TimestampMixin):
+    """Channel-specific identifier of a customer (doc 9: normalized external ids)."""
+
+    __tablename__ = "customer_external_ids"
+
+    customer_id: Mapped[UUID] = mapped_column(
+        ForeignKey("customers.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    channel: Mapped[str] = mapped_column(String(32), nullable=False)
+    external_id: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # Relationships
+    customer: Mapped["Customer"] = relationship("Customer", back_populates="external_ids")
+
+    __table_args__ = (
+        UniqueConstraint("channel", "external_id", name="uq_customer_external_channel_id"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<CustomerExternalID(id={self.id}, channel={self.channel})>"
 
 
 class CustomerProfile(Base, UUIDMixin, TimestampMixin):
@@ -63,10 +89,14 @@ class CustomerProfile(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "customer_profiles"
 
-    customer_id: Mapped[UUID] = mapped_column(unique=True, nullable=False, index=True)
-    vehicle_id: Mapped[Optional[UUID]] = mapped_column(nullable=True)
-    budget_min: Mapped[Optional[float]] = mapped_column(nullable=True)
-    budget_max: Mapped[Optional[float]] = mapped_column(nullable=True)
+    customer_id: Mapped[UUID] = mapped_column(
+        ForeignKey("customers.id"), unique=True, nullable=False, index=True
+    )
+    vehicle_id: Mapped[Optional[UUID]] = mapped_column(
+        ForeignKey("vehicles.id"), nullable=True
+    )
+    budget_min: Mapped[Optional[float]] = mapped_column(Numeric(12, 2), nullable=True)
+    budget_max: Mapped[Optional[float]] = mapped_column(Numeric(12, 2), nullable=True)
     customer_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     preferences: Mapped[Optional[dict]] = mapped_column(JSON, default={}, nullable=True)
     facts: Mapped[Optional[dict]] = mapped_column(JSON, default={}, nullable=True)

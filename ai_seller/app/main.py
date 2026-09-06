@@ -1,6 +1,7 @@
 """Main FastAPI application."""
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncGenerator
 
 from fastapi import FastAPI, Request
@@ -23,9 +24,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     setup_logging()
     logger.info("Starting AI Seller application")
     
-    # Initialize database
+    # Initialize database (best-effort so the app can boot without infrastructure)
     if settings.debug:
-        await init_db()
+        try:
+            await init_db()
+        except Exception as e:
+            logger.warning(f"Database initialization skipped: {e}")
     
     logger.info("Application started successfully")
     
@@ -74,7 +78,9 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 app.include_router(api_router, prefix="/api/v1")
 
 # Mount static files for widget
-app.mount("/widget", StaticFiles(directory="widget/dist"), name="widget")
+_widget_dir = Path(__file__).resolve().parent.parent / "widget" / "dist"
+if _widget_dir.is_dir():
+    app.mount("/widget", StaticFiles(directory=str(_widget_dir)), name="widget")
 
 
 # Health check endpoint

@@ -1,28 +1,32 @@
-# Warranty Terms
+# Гарантия и возврат
 
-## Standard Warranty
-- **Duration:** 24 months from date of purchase
-- **Coverage:** Manufacturing defects, premature failure
-- **What is covered:** All LED and xenon products
+На всю продукцию ORIONLIGHT действует официальная гарантия **2 года**. Гарантия отсчитывается с момента получения заказа — дата указана в товарном чеке.
 
-## Extended Warranty
-- **Available for:** Premium product lines
-- **Duration:** Up to 36 months
-- **Conditions:** Proper installation and usage
+## Что покрывает гарантия
 
-## Warranty Claim Process
-1. Present your receipt or invoice
-2. Describe the issue
-3. Send the product for inspection (shipping paid by seller)
-4. Receive replacement or repair
+- Заводской брак: бесплатная замена на новый товар или возврат денег, включая доставку.
+- Решение принимаем в пользу клиента, если брак подтверждён — без «экспертиз» за счёт клиента.
 
-## What is NOT Covered
-- Mechanical damage
-- Improper installation
-- Usage in non-standard conditions
-- Modifications to the product
+## Гарантия НЕ распространяется на
 
-## Important Notes
-- Warranty is valid only for the original purchaser
-- Proof of purchase is required
-- Products must be used according to manufacturer specifications
+- механические повреждения;
+- самостоятельный ремонт;
+- нарушение инструкции по установке;
+- использование в условиях, не предусмотренных производителем.
+
+## Возврат и обмен (Закон РФ «О защите прав потребителей», ст. 25)
+
+Товар надлежащего качества можно вернуть или обменять в течение **14 дней** с момента покупки:
+
+- срок — 14 дней с даты получения, без объяснения причин;
+- состояние — товар не был в установке, сохранён товарный вид, пломбы и комплектация;
+- документы — чек или заказ из личного кабинета, упаковка в наличии;
+- возврат денег — при оплате картой средства вернутся на карту в течение 3–10 рабочих дней;
+- бракованный товар — меняем на такой же или возвращаем полную стоимость в течение 10 дней.
+
+## Как оформить возврат
+
+1. Сообщить номер заказа и причину возврата (по телефону, почте или в чате).
+2. Менеджер подтверждает возможность возврата и согласует способ отправки.
+3. Отправить товар. Бракованный товар отправляется за наш счёт.
+4. Обмен или возврат денег в течение 3–10 рабочих дней после проверки.

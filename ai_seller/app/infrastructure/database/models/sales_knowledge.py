@@ -3,7 +3,20 @@
 from typing import TYPE_CHECKING, List, Optional
 from uuid import UUID
 
-from sqlalchemy import Boolean, Integer, JSON, Numeric, String, Text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    JSON,
+    Numeric,
+    String,
+    Table,
+    Text,
+    Uuid,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.infrastructure.database.base import Base, TimestampMixin, UUIDMixin
@@ -17,7 +30,9 @@ class SalesScenario(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "sales_scenarios"
 
-    shop_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
+    shop_id: Mapped[UUID] = mapped_column(
+        ForeignKey("shops.id"), index=True, nullable=False
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     intent: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
@@ -31,10 +46,7 @@ class SalesScenario(Base, UUIDMixin, TimestampMixin):
     )
 
     __table_args__ = (
-        # Index for sales scenarios
-        {"ix_sales_scenarios_shop": True},
-        {"ix_sales_scenarios_intent": True},
-        {"ix_sales_scenarios_stage": True},
+        Index("ix_sales_scenarios_shop_stage", "shop_id", "sales_stage"),
     )
 
     def __repr__(self) -> str:
@@ -84,8 +96,12 @@ class SalesDialogue(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "sales_dialogues"
 
-    scenario_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
-    shop_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
+    scenario_id: Mapped[UUID] = mapped_column(
+        ForeignKey("sales_scenarios.id"), index=True, nullable=False
+    )
+    shop_id: Mapped[UUID] = mapped_column(
+        ForeignKey("shops.id"), index=True, nullable=False
+    )
     title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     customer_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     emotion: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
@@ -104,11 +120,8 @@ class SalesDialogue(Base, UUIDMixin, TimestampMixin):
     )
 
     __table_args__ = (
-        # Index for sales dialogues
-        {"ix_sales_dialogues_scenario": True},
-        {"ix_sales_dialogues_shop": True},
-        {"ix_sales_dialogues_intent": True},
-        {"ix_sales_dialogues_stage": True},
+        Index("ix_sales_dialogues_scenario", "scenario_id"),
+        Index("ix_sales_dialogues_intent_stage", "intent", "sales_stage"),
     )
 
     def __repr__(self) -> str:
@@ -120,7 +133,9 @@ class Objection(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "objections"
 
-    shop_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
+    shop_id: Mapped[UUID] = mapped_column(
+        ForeignKey("shops.id"), index=True, nullable=False
+    )
     code: Mapped[str] = mapped_column(String(50), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -132,8 +147,7 @@ class Objection(Base, UUIDMixin, TimestampMixin):
     )
 
     __table_args__ = (
-        # Unique constraint for objection code per shop
-        {"ix_objections_shop_code": True},
+        Index("ix_objections_shop_code", "shop_id", "code"),
     )
 
     def __repr__(self) -> str:
@@ -141,15 +155,19 @@ class Objection(Base, UUIDMixin, TimestampMixin):
 
 
 # Association table for many-to-many relationship between SalesDialogue and Objection
-sales_dialogue_objections = (
+sales_dialogue_objections = Table(
     "sales_dialogue_objections",
     Base.metadata,
-    Mapped[Any],
-    {
-        "columns": [
-            mapped_column("sales_dialogue_id", UUID, nullable=False),
-            mapped_column("objection_id", UUID, nullable=False),
-        ],
-        "primary_key": ("sales_dialogue_id", "objection_id"),
-    },
+    Column(
+        "sales_dialogue_id",
+        Uuid(as_uuid=True),
+        ForeignKey("sales_dialogues.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "objection_id",
+        Uuid(as_uuid=True),
+        ForeignKey("objections.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
 )

@@ -3,7 +3,7 @@
 from typing import TYPE_CHECKING, List, Optional
 from uuid import UUID
 
-from sqlalchemy import Boolean, Integer, JSON, Numeric, String, Text
+from sqlalchemy import Boolean, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.infrastructure.database.base import Base, TimestampMixin, UUIDMixin
@@ -25,7 +25,9 @@ class Agent(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "agents"
 
-    shop_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
+    shop_id: Mapped[UUID] = mapped_column(
+        ForeignKey("shops.id"), index=True, nullable=False
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(30), default=AgentStatus.ACTIVE, nullable=False)
@@ -43,8 +45,7 @@ class Agent(Base, UUIDMixin, TimestampMixin):
     )
 
     __table_args__ = (
-        # Unique constraint for agent name per shop
-        {"ix_agents_shop_name": True},
+        UniqueConstraint("shop_id", "name", name="uq_agents_shop_name"),
     )
 
     def __repr__(self) -> str:
@@ -56,7 +57,9 @@ class AgentConfiguration(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "agent_configurations"
 
-    agent_id: Mapped[UUID] = mapped_column(unique=True, nullable=False, index=True)
+    agent_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agents.id"), unique=True, nullable=False, index=True
+    )
     llm_provider: Mapped[str] = mapped_column(String(50), default="ollama", nullable=False)
     llm_model: Mapped[str] = mapped_column(String(100), nullable=False)
     temperature: Mapped[float] = mapped_column(Numeric(3, 2), default=0.7, nullable=False)
@@ -80,7 +83,9 @@ class PromptVersion(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "prompt_versions"
 
-    agent_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
+    agent_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agents.id"), index=True, nullable=False
+    )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     version: Mapped[str] = mapped_column(String(50), nullable=False)
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
@@ -92,8 +97,7 @@ class PromptVersion(Base, UUIDMixin, TimestampMixin):
     agent: Mapped["Agent"] = relationship("Agent", back_populates="prompt_versions")
 
     __table_args__ = (
-        # Index for active prompt per agent
-        {"ix_prompt_versions_agent_active": True},
+        Index("ix_prompt_versions_agent_active", "agent_id", "is_active"),
     )
 
     def __repr__(self) -> str:

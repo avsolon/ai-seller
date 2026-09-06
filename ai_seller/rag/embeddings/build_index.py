@@ -2,16 +2,19 @@
 
 import asyncio
 import json
-import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-import httpx
 from qdrant_client import QdrantClient, models
 from sentence_transformers import SentenceTransformer
 
 from app.core.config import settings
 from app.core.logging import get_logger
+
+try:  # when run as a module (python -m rag.embeddings.build_index)
+    from rag.embeddings import sales_dataset
+except Exception:  # when run as a plain script from the embeddings directory
+    import sales_dataset  # type: ignore
 
 logger = get_logger(__name__)
 
@@ -35,39 +38,44 @@ class SalesRAGIndexer:
             # Check if collection exists
             collections = await self.qdrant_client.get_collections()
             collection_names = [c.name for c in collections.collections]
-            
-            if self.collection_name in collection_names:
+
+            if self.collection_name not in collection_names:
+                # Create new collection
+                await self.qdrant_client.create_collection(
+                    collection_name=self.collection_name,
+                    vectors_config=models.VectorParams(
+                        size=384,  # Size for paraphrase-multilingual-MiniLM-L12-v2
+                        distance=models.Distance.COSINE,
+                    ),
+                )
+                logger.info(f"Created collection {self.collection_name}")
+            else:
                 logger.info(f"Collection {self.collection_name} already exists")
-                return
-            
-            # Create new collection
-            await self.qdrant_client.create_collection(
-                collection_name=self.collection_name,
-                vectors_config=models.VectorParams(
-                    size=384,  # Size for paraphrase-multilingual-MiniLM-L12-v2
-                    distance=models.Distance.COSINE,
-                ),
-                # Define payload schema
-                payload_schema={
-                    "id": models.PayloadSchemaType.KEYWORD,
-                    "scenario": models.PayloadSchemaType.KEYWORD,
-                    "customer_type": models.PayloadSchemaType.KEYWORD,
-                    "sales_stage": models.PayloadSchemaType.KEYWORD,
-                    "intent": models.PayloadSchemaType.KEYWORD,
-                    "emotion": models.PayloadSchemaType.KEYWORD,
-                    "objection": models.PayloadSchemaType.KEYWORD,
-                    "goal": models.PayloadSchemaType.KEYWORD,
-                    "quality_score": models.PayloadSchemaType.FLOAT,
-                    "language": models.PayloadSchemaType.KEYWORD,
-                    "shop_id": models.PayloadSchemaType.KEYWORD,
-                    "tags": models.PayloadSchemaType.KEYWORD,
-                    "dialogue": models.PayloadSchemaType.TEXT,
-                    "successful_strategy": models.PayloadSchemaType.TEXT,
-                    "mistakes_to_avoid": models.PayloadSchemaType.TEXT,
-                },
-            )
-            logger.info(f"Created collection {self.collection_name}")
-            
+
+            # Create payload indexes for filtered fields (idempotent best-effort)
+            keyword_fields = [
+                "id",
+                "scenario",
+                "customer_type",
+                "sales_stage",
+                "intent",
+                "emotion",
+                "goal",
+                "label",
+                "objection",
+                "language",
+                "shop_id",
+            ]
+            for field in keyword_fields:
+                try:
+                    await self.qdrant_client.create_payload_index(
+                        collection_name=self.collection_name,
+                        field_name=field,
+                        field_schema=models.PayloadSchemaType.KEYWORD,
+                    )
+                except Exception as e:
+                    logger.debug(f"Payload index {field} skipped: {e}")
+
         except Exception as e:
             logger.error(f"Error initializing collection: {e}")
             raise
@@ -81,73 +89,33 @@ class SalesRAGIndexer:
             logger.error(f"Error generating embedding: {e}")
             raise
 
-    def _extract_dialogue_text(self, dialogue: List[Dict[str, Any]]) -> str:
-        """Extract text from dialogue for embedding."""
-        texts = []
-        for message in dialogue:
-            if message.get("role") == "customer":
-                texts.append(f"Клиент: {message.get('text', '')}")
-            elif message.get("role") == "seller":
-                texts.append(f"Продавец: {message.get('text', '')}")
-        return " ".join(texts)
-
-    def _create_semantic_query(self, dialogue_data: Dict[str, Any]) -> str:
-        """Create semantic query for embedding."""
-        customer_type = dialogue_data.get("customer_profile", {}).get("type", "unknown")
-        scenario = dialogue_data.get("scenario", "unknown")
-        intent = dialogue_data.get("intent", "unknown")
-        emotion = dialogue_data.get("emotion", "neutral")
-        goal = dialogue_data.get("goal", "unknown")
-        
-        query = f"Клиент типа {customer_type} находится в сценарии {scenario} "
-        query += f"с намерением {intent}, эмоцией {emotion} и целью {goal}. "
-        query += f"Диалог: {self._extract_dialogue_text(dialogue_data.get('dialogue', []))}"
-        
-        return query
-
     async def _index_dialogue(self, dialogue_data: Dict[str, Any], shop_id: str) -> None:
         """Index a single dialogue into Qdrant."""
         try:
             # Create semantic query for embedding
-            semantic_query = self._create_semantic_query(dialogue_data)
-            
+            semantic_query = sales_dataset.create_semantic_query(dialogue_data)
+
             # Generate embedding
             embedding = self._generate_embedding(semantic_query)
-            
+
             # Prepare payload
-            payload = {
-                "id": dialogue_data.get("id"),
-                "scenario": dialogue_data.get("scenario"),
-                "customer_type": dialogue_data.get("customer_profile", {}).get("type"),
-                "sales_stage": dialogue_data.get("sales_stage"),
-                "intent": dialogue_data.get("intent"),
-                "emotion": dialogue_data.get("emotion"),
-                "objection": dialogue_data.get("objection"),
-                "goal": dialogue_data.get("goal"),
-                "quality_score": dialogue_data.get("quality_score", 0.0),
-                "language": dialogue_data.get("language", "ru"),
-                "shop_id": shop_id,
-                "tags": dialogue_data.get("tags", []),
-                "dialogue": json.dumps(dialogue_data.get("dialogue", []), ensure_ascii=False),
-                "successful_strategy": json.dumps(dialogue_data.get("successful_strategy", []), ensure_ascii=False),
-                "mistakes_to_avoid": json.dumps(dialogue_data.get("mistakes_to_avoid", []), ensure_ascii=False),
-            }
-            
+            payload = sales_dataset.build_payload(dialogue_data, shop_id)
+
             # Create point
             point = models.PointStruct(
                 id=str(dialogue_data.get("id")),
                 vector=embedding,
                 payload=payload,
             )
-            
+
             # Upsert point
             await self.qdrant_client.upsert(
                 collection_name=self.collection_name,
                 points=[point],
             )
-            
+
             logger.debug(f"Indexed dialogue {dialogue_data.get('id')}")
-            
+
         except Exception as e:
             logger.error(f"Error indexing dialogue {dialogue_data.get('id')}: {e}")
             raise

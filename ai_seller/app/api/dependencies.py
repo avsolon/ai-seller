@@ -1,11 +1,10 @@
 """API dependencies."""
 
-from typing import Annotated, AsyncGenerator
+from typing import Annotated, Any, AsyncGenerator, Optional
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-import redis.asyncio as redis
 
 from app.core.config import Settings, get_settings
 from app.infrastructure.database.session import get_async_session
@@ -23,11 +22,13 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 # Redis dependency
 @asynccontextmanager
-async def get_redis_connection() -> AsyncGenerator[redis.Redis, None]:
+async def get_redis_connection() -> AsyncGenerator[Any, None]:
     """Get Redis connection."""
-    settings = get_settings()
+    import redis.asyncio as redis  # lazy import: redis is an optional runtime dependency
+
+    app_settings = get_settings()
     try:
-        connection = redis.from_url(settings.redis_url, decode_responses=True)
+        connection = redis.from_url(app_settings.redis_url, decode_responses=True)
         yield connection
         await connection.close()
     except Exception as e:
@@ -38,7 +39,7 @@ async def get_redis_connection() -> AsyncGenerator[redis.Redis, None]:
         )
 
 
-async def get_redis() -> AsyncGenerator[redis.Redis, None]:
+async def get_redis() -> AsyncGenerator[Any, None]:
     """Get Redis connection dependency."""
     async with get_redis_connection() as connection:
         yield connection
@@ -80,9 +81,34 @@ async def get_shop_id(
     return x_shop_id or settings.shop_id
 
 
+async def resolve_shop(db: AsyncSession, shop_identifier: Optional[str]) -> Optional[Any]:
+    """Resolve a shop by UUID or slug. Returns the Shop ORM object or None."""
+    from uuid import UUID
+
+    from sqlalchemy import select
+
+    from app.infrastructure.database.models.shop import Shop
+
+    if not shop_identifier:
+        return None
+
+    # Try to parse as a UUID first
+    try:
+        shop_uuid = UUID(str(shop_identifier))
+    except (ValueError, AttributeError):
+        shop_uuid = None
+
+    result = await db.execute(
+        select(Shop).where(
+            Shop.id == shop_uuid if shop_uuid is not None else Shop.slug == shop_identifier
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 # Annotated types for cleaner imports
 DatabaseSession = Annotated[AsyncSession, Depends(get_db)]
-RedisConnection = Annotated[redis.Redis, Depends(get_redis)]
+RedisConnection = Annotated[Any, Depends(get_redis)]
 AppSettings = Annotated[Settings, Depends(get_settings_dependency)]
 ApiKey = Annotated[str, Depends(get_api_key)]
 ShopId = Annotated[str, Depends(get_shop_id)]

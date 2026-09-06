@@ -23,6 +23,7 @@ class RAGRetriever:
         )
         self.knowledge_collection = "product_knowledge"
         self.sales_collection = "sales_dialogues"
+        self._embedding_model = None
 
     async def search_knowledge(
         self,
@@ -31,31 +32,38 @@ class RAGRetriever:
         limit: int = 5,
         filters: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
-        """Search in knowledge RAG."""
+        """Search in knowledge RAG (with graceful fallback to an unfiltered search)."""
         try:
             # Generate embedding for query
             embedding = self._generate_embedding(query)
-            
+
             # Prepare filters
             qdrant_filters = self._prepare_filters(filters, intent)
-            
-            # Search in Qdrant
-            search_result = await self.qdrant_client.search(
-                collection_name=self.knowledge_collection,
-                query_vector=embedding,
-                limit=limit,
-                with_payload=True,
-                with_vectors=False,
-                query_filter=qdrant_filters,
-            )
-            
-            # Convert results
+
             results = []
-            for result in search_result:
-                results.append(result.payload)
-            
+            if qdrant_filters is not None:
+                search_result = await self.qdrant_client.search(
+                    collection_name=self.knowledge_collection,
+                    query_vector=embedding,
+                    limit=limit,
+                    with_payload=True,
+                    with_vectors=False,
+                    query_filter=qdrant_filters,
+                )
+                results = [r.payload for r in search_result]
+
+            if not results:
+                search_result = await self.qdrant_client.search(
+                    collection_name=self.knowledge_collection,
+                    query_vector=embedding,
+                    limit=limit,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                results = [r.payload for r in search_result]
+
             return results
-            
+
         except Exception as e:
             logger.error(f"Error searching knowledge: {e}")
             return []
@@ -68,47 +76,75 @@ class RAGRetriever:
         customer_type: Optional[str] = None,
         limit: int = 5,
     ) -> List[Dict[str, Any]]:
-        """Search in sales dialogues RAG."""
+        """Search in sales dialogues RAG.
+
+        First attempts a filtered search (intent / state / customer type) and
+        gracefully falls back to an unfiltered semantic search when the strict
+        filter matches nothing. This keeps retrieval robust even when the
+        keyword-based intent detection does not exactly match the dataset
+        taxonomy.
+        """
         try:
             # Generate embedding for query
             embedding = self._generate_embedding(query)
-            
-            # Prepare filters
+
+            # Normalize filter values to lowercase to match indexed payloads
+            def _norm(value: Optional[str]) -> Optional[str]:
+                if not value:
+                    return None
+                return str(value).strip().lower()
+
             filters = {
-                "intent": intent,
-                "sales_stage": sales_state,
-                "customer_type": customer_type,
+                "intent": _norm(intent),
+                "sales_stage": _norm(sales_state),
+                "customer_type": _norm(customer_type),
                 "shop_id": settings.shop_id,
             }
             qdrant_filters = self._prepare_filters(filters)
-            
-            # Search in Qdrant
-            search_result = await self.qdrant_client.search(
-                collection_name=self.sales_collection,
-                query_vector=embedding,
-                limit=limit,
-                with_payload=True,
-                with_vectors=False,
-                query_filter=qdrant_filters,
-            )
-            
-            # Convert results
+
+            # Search in Qdrant (strict, filtered)
             results = []
-            for result in search_result:
-                results.append(result.payload)
-            
+            if qdrant_filters is not None:
+                search_result = await self.qdrant_client.search(
+                    collection_name=self.sales_collection,
+                    query_vector=embedding,
+                    limit=limit,
+                    with_payload=True,
+                    with_vectors=False,
+                    query_filter=qdrant_filters,
+                )
+                results = [r.payload for r in search_result]
+
+            # Fallback: no filters (or too strict) -> plain semantic search
+            if not results:
+                search_result = await self.qdrant_client.search(
+                    collection_name=self.sales_collection,
+                    query_vector=embedding,
+                    limit=limit,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                results = [r.payload for r in search_result]
+
             return results
-            
+
         except Exception as e:
             logger.error(f"Error searching sales dialogues: {e}")
             return []
+
+    def _get_embedding_model(self):
+        """Return a lazily-initialized, cached SentenceTransformer model."""
+        if getattr(self, "_embedding_model", None) is None:
+            from sentence_transformers import SentenceTransformer
+
+            self._embedding_model = SentenceTransformer(settings.embedding_model)
+        return self._embedding_model
 
     def _generate_embedding(self, text: str) -> List[float]:
         """Generate embedding for text."""
         # In production, use proper embedding model
         # For now, return a dummy embedding
-        from sentence_transformers import SentenceTransformer
-        model = SentenceTransformer(settings.embedding_model)
+        model = self._get_embedding_model()
         embedding = model.encode(text, convert_to_tensor=True)
         return embedding.tolist()
 

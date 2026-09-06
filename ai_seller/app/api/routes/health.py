@@ -1,27 +1,33 @@
 """Health check routes."""
 
 from fastapi import APIRouter, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
 
-from app.api.dependencies import get_db
 from app.core.config import Settings, get_settings
+from app.infrastructure.database.session import async_session_maker
+from app.core.logging import get_logger
 
 router = APIRouter()
+logger = get_logger(__name__)
+
+
+async def _check_database() -> str:
+    """Check database connectivity without raising."""
+    try:
+        async with async_session_maker() as db:
+            await db.execute(text("SELECT 1"))
+        return "healthy"
+    except Exception as e:
+        logger.warning(f"Database health check failed: {e}")
+        return f"unhealthy: {type(e).__name__}"
 
 
 @router.get("/")
 async def health_check(
     settings: Settings = Depends(get_settings),
-    db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Health check endpoint."""
-    # Test database connection
-    try:
-        await db.execute("SELECT 1")
-        db_status = "healthy"
-    except Exception:
-        db_status = "unhealthy"
-    
+    db_status = await _check_database()
     return {
         "status": "healthy",
         "environment": settings.app_env,
@@ -33,16 +39,9 @@ async def health_check(
 @router.get("/detailed")
 async def detailed_health_check(
     settings: Settings = Depends(get_settings),
-    db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Detailed health check endpoint."""
-    # Test database connection
-    try:
-        await db.execute("SELECT 1")
-        db_status = "healthy"
-    except Exception as e:
-        db_status = f"unhealthy: {str(e)}"
-    
+    db_status = await _check_database()
     return {
         "status": "healthy" if db_status == "healthy" else "degraded",
         "environment": settings.app_env,

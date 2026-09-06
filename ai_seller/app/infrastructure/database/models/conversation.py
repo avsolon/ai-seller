@@ -4,7 +4,17 @@ from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 from uuid import UUID
 
-from sqlalchemy import DateTime, JSON, String, Text, func
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text as sqltext,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.infrastructure.database.base import Base, TimestampMixin, UUIDMixin
@@ -14,6 +24,8 @@ if TYPE_CHECKING:
     from app.infrastructure.database.models.shop import Shop
     from app.infrastructure.database.models.agent import Agent
     from app.infrastructure.database.models.sales import Recommendation, Lead, Order
+    from app.infrastructure.database.models.sales_state import SalesStateRecord
+    from app.infrastructure.database.models.agent_run import AgentRun
 
 
 class Channel(str):
@@ -30,6 +42,7 @@ class Channel(str):
 class ConversationStatus(str):
     """Conversation status enum."""
     ACTIVE = "active"
+    CLOSED = "closed"
     WAITING_CUSTOMER = "waiting_customer"
     WAITING_MANAGER = "waiting_manager"
     HANDED_OFF = "handed_off"
@@ -58,6 +71,8 @@ class SenderType(str):
     AGENT = "agent"
     MANAGER = "manager"
     SYSTEM = "system"
+    TOOL = "tool"
+    HUMAN = "human"
 
 
 class MessageType(str):
@@ -76,9 +91,15 @@ class Conversation(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "conversations"
 
-    shop_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
-    customer_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
-    agent_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
+    shop_id: Mapped[UUID] = mapped_column(
+        ForeignKey("shops.id"), index=True, nullable=False
+    )
+    customer_id: Mapped[UUID] = mapped_column(
+        ForeignKey("customers.id"), index=True, nullable=False
+    )
+    agent_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agents.id"), index=True, nullable=False
+    )
     channel: Mapped[str] = mapped_column(String(30), default=Channel.WEB, nullable=False)
     external_session_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(
@@ -115,6 +136,21 @@ class Conversation(Base, UUIDMixin, TimestampMixin):
     orders: Mapped[List["Order"]] = relationship(
         "Order", back_populates="conversation", cascade="all, delete-orphan"
     )
+    sales_state_record: Mapped[Optional["SalesStateRecord"]] = relationship(
+        "SalesStateRecord",
+        back_populates="conversation",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    agent_runs: Mapped[List["AgentRun"]] = relationship(
+        "AgentRun", back_populates="conversation", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("ix_conversations_shop_status", "shop_id", "status"),
+        Index("ix_conversations_customer_created", "customer_id", "last_message_at"),
+        Index("ix_conversations_last_message_at", "last_message_at"),
+    )
 
     def __repr__(self) -> str:
         return f"<Conversation(id={self.id}, customer_id={self.customer_id}, status={self.status})>"
@@ -125,12 +161,15 @@ class Message(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "messages"
 
-    conversation_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
+    conversation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("conversations.id"), nullable=False
+    )
     sender_type: Mapped[str] = mapped_column(String(30), nullable=False)
     message_type: Mapped[str] = mapped_column(String(30), default=MessageType.TEXT, nullable=False)
+    channel: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     external_message_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    metadata: Mapped[Optional[dict]] = mapped_column(JSON, default={}, nullable=True)
+    meta: Mapped[Optional[dict]] = mapped_column("metadata", JSON, default={}, nullable=True)
 
     # Relationships
     conversation: Mapped["Conversation"] = relationship("Conversation", back_populates="messages")
@@ -142,8 +181,14 @@ class Message(Base, UUIDMixin, TimestampMixin):
     )
 
     __table_args__ = (
-        # Index for conversation messages
-        {"ix_messages_conversation_created": True},
+        Index("ix_messages_conversation_created", "conversation_id", "created_at"),
+        Index(
+            "uq_message_external",
+            "channel",
+            "external_message_id",
+            unique=True,
+            postgresql_where=sqltext("external_message_id IS NOT NULL"),
+        ),
     )
 
     def __repr__(self) -> str:
@@ -155,7 +200,9 @@ class MessageAIData(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "message_ai_data"
 
-    message_id: Mapped[UUID] = mapped_column(unique=True, nullable=False, index=True)
+    message_id: Mapped[UUID] = mapped_column(
+        ForeignKey("messages.id"), unique=True, nullable=False, index=True
+    )
     llm_provider: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     llm_model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     prompt_version: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
@@ -164,7 +211,7 @@ class MessageAIData(Base, UUIDMixin, TimestampMixin):
     latency_ms: Mapped[Optional[int]] = mapped_column(nullable=True)
     rag_used: Mapped[Optional[bool]] = mapped_column(default=False, nullable=True)
     fallback_used: Mapped[Optional[bool]] = mapped_column(default=False, nullable=True)
-    metadata: Mapped[Optional[dict]] = mapped_column(JSON, default={}, nullable=True)
+    meta: Mapped[Optional[dict]] = mapped_column("metadata", JSON, default={}, nullable=True)
 
     # Relationships
     message: Mapped["Message"] = relationship("Message", back_populates="ai_data")
@@ -178,23 +225,25 @@ class SalesInteraction(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "sales_interactions"
 
-    conversation_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
-    message_id: Mapped[Optional[UUID]] = mapped_column(nullable=True)
+    conversation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("conversations.id"), nullable=False
+    )
+    message_id: Mapped[Optional[UUID]] = mapped_column(
+        ForeignKey("messages.id"), nullable=True
+    )
     type: Mapped[str] = mapped_column(String(50), nullable=False)
     intent: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     emotion: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     sales_state: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    metadata: Mapped[Optional[dict]] = mapped_column(JSON, default={}, nullable=True)
+    meta: Mapped[Optional[dict]] = mapped_column("metadata", JSON, default={}, nullable=True)
 
     # Relationships
     conversation: Mapped["Conversation"] = relationship("Conversation", back_populates="sales_interactions")
     message: Mapped[Optional["Message"]] = relationship("Message", foreign_keys=[message_id])
 
     __table_args__ = (
-        # Index for sales analytics
-        {"ix_sales_interactions_conversation": True},
-        {"ix_sales_interactions_type": True},
-        {"ix_sales_interactions_created": True},
+        Index("ix_sales_interactions_conversation_created", "conversation_id", "created_at"),
+        Index("ix_sales_interactions_type", "type"),
     )
 
     def __repr__(self) -> str:

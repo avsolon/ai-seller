@@ -2,11 +2,21 @@
 
 import logging
 import sys
-from typing import Any
-
-from pythonjsonlogger import jsonlogger
+from typing import Any, Optional
 
 from app.core.config import settings
+
+
+def _get_json_formatter() -> Optional[logging.Formatter]:
+    """Return JSON formatter if pythonjsonlogger is available."""
+    try:
+        from pythonjsonlogger import jsonlogger
+
+        return jsonlogger.JsonFormatter(
+            fmt="%(asctime)s %(levelname)s %(name)s %(message)s %(module)s %(funcName)s %(lineno)d"
+        )
+    except ImportError:  # pragma: no cover - depends on optional dependency
+        return None
 
 
 def setup_logging() -> None:
@@ -15,8 +25,9 @@ def setup_logging() -> None:
 
     # Create formatter based on format setting
     if settings.log_format.lower() == "json":
-        formatter = jsonlogger.JsonFormatter(
-            fmt="%(asctime)s %(levelname)s %(name)s %(message)s %(module)s %(funcName)s %(lineno)d"
+        formatter = _get_json_formatter() or logging.Formatter(
+            fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
         )
     else:
         formatter = logging.Formatter(

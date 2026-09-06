@@ -84,6 +84,9 @@ class SellerAgent:
                 message, intent, sales_state, context, rag_context, product_context
             )
             
+            # Attach products to context so the final response can include them
+            context["relevant_products"] = product_context.get("relevant_products", [])
+            
             # Step 5: Generate response
             response_text, metadata = await self._generate_response(prompt)
             
@@ -212,16 +215,30 @@ class SellerAgent:
         if settings.rag_enabled:
             try:
                 # Retrieve knowledge RAG
-                if intent in ["price_objection", "compatibility", "general_question"]:
+                if intent in ["price_objection", "price_inquiry", "compatibility",
+                              "availability", "general_question", "product_info"]:
                     knowledge_results = await self.rag_retriever.search_knowledge(
                         query=message,
-                        intent=intent,
                         limit=3,
                     )
                     rag_context["knowledge"] = knowledge_results
-                
-                # Retrieve sales RAG
-                if sales_state in [SalesState.OBJECTION, SalesState.NEGOTIATION, SalesState.CLOSING]:
+
+                # Retrieve sales RAG — use behavioral patterns in most sales states,
+                # not only for objections/closing.
+                sales_intents = {
+                    "greeting", "recommendation", "price_inquiry", "price_objection",
+                    "availability", "compatibility", "order_intent",
+                }
+                sales_states = {
+                    SalesState.DISCOVERY,
+                    SalesState.QUALIFICATION,
+                    SalesState.RECOMMENDATION,
+                    SalesState.OBJECTION,
+                    SalesState.NEGOTIATION,
+                    SalesState.CLOSING,
+                    SalesState.ORDER,
+                }
+                if intent in sales_intents or sales_state in sales_states:
                     sales_results = await self.rag_retriever.search_sales_dialogues(
                         query=message,
                         intent=intent,
@@ -230,7 +247,7 @@ class SellerAgent:
                         limit=3,
                     )
                     rag_context["sales_patterns"] = sales_results
-                    
+
             except Exception as e:
                 logger.warning(f"RAG retrieval error: {e}")
         
@@ -249,26 +266,44 @@ class SellerAgent:
             "compatibility_info": None,
         }
         
+        if not available_products:
+            return product_context
+
         # If we have vehicle information, check compatibility
         customer_profile = context.get("customer_profile", {})
         vehicle_info = customer_profile.get("vehicle")
-        
-        if vehicle_info and available_products:
-            # Find compatible products
-            compatible_products = []
+
+        candidates: List[Product] = []
+        if vehicle_info and intent in ["compatibility", "recommendation", "price_inquiry",
+                                       "availability", "general_question"]:
+            # Products that have at least one confirmed non-negative compatibility
             for product in available_products:
-                # Check compatibility (simplified - in production, use proper compatibility check)
-                if product.compatibilities:
-                    compatible_products.append({
-                        "id": str(product.id),
-                        "name": product.name,
-                        "price": product.price,
-                        "brand": product.brand,
-                        "specifications": product.specifications,
-                    })
-            
-            product_context["relevant_products"] = compatible_products[:5]  # Top 5
-        
+                confirmed = [
+                    c for c in (product.compatibilities or [])
+                    if c.is_confirmed and c.type != "not_recommended"
+                ]
+                if confirmed:
+                    candidates.append(product)
+        elif intent in ["recommendation", "price_inquiry", "availability", "general_question",
+                        "price_objection"]:
+            # No vehicle known yet — still allow well-informed suggestions
+            candidates = available_products
+
+        # Order candidates by price and take the top 5
+        candidates.sort(key=lambda p: float(p.price) if p.price is not None else 0.0)
+        product_context["relevant_products"] = [
+            {
+                "id": str(p.id),
+                "name": p.name,
+                "price": float(p.price) if p.price is not None else 0.0,
+                "brand": p.brand,
+                "category": p.category,
+                "stock_quantity": p.stock_quantity,
+                "specifications": p.specifications,
+            }
+            for p in candidates[:5]
+        ]
+
         return product_context
 
     async def _build_prompt(

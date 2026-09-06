@@ -1,10 +1,9 @@
 """Sales models."""
 
-from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 from uuid import UUID
 
-from sqlalchemy import Boolean, DateTime, Integer, JSON, Numeric, SmallInteger, String, Text
+from sqlalchemy import Boolean, ForeignKey, Index, Integer, JSON, Numeric, SmallInteger, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.infrastructure.database.base import Base, TimestampMixin, UUIDMixin
@@ -28,10 +27,18 @@ class Recommendation(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "recommendations"
 
-    conversation_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
-    customer_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
-    product_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
-    variant_id: Mapped[Optional[UUID]] = mapped_column(nullable=True)
+    conversation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("conversations.id"), index=True, nullable=False
+    )
+    customer_id: Mapped[UUID] = mapped_column(
+        ForeignKey("customers.id"), index=True, nullable=False
+    )
+    product_id: Mapped[UUID] = mapped_column(
+        ForeignKey("products.id"), index=True, nullable=False
+    )
+    variant_id: Mapped[Optional[UUID]] = mapped_column(
+        ForeignKey("product_variants.id"), nullable=True
+    )
     reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     score: Mapped[Optional[float]] = mapped_column(Numeric(5, 4), nullable=True)
     source: Mapped[str] = mapped_column(
@@ -49,10 +56,7 @@ class Recommendation(Base, UUIDMixin, TimestampMixin):
     )
 
     __table_args__ = (
-        # Index for recommendations
-        {"ix_recommendations_conversation": True},
-        {"ix_recommendations_customer": True},
-        {"ix_recommendations_product": True},
+        Index("ix_recommendations_conversation_created", "conversation_id", "created_at"),
     )
 
     def __repr__(self) -> str:
@@ -63,10 +67,12 @@ class LeadStatus(str):
     """Lead status enum."""
     NEW = "new"
     QUALIFIED = "qualified"
+    HOT = "hot"
     CONTACTED = "contacted"
     IN_PROGRESS = "in_progress"
     CONVERTED = "converted"
     LOST = "lost"
+    HANDED_OFF = "handed_off"
 
 
 class Lead(Base, UUIDMixin, TimestampMixin):
@@ -74,14 +80,25 @@ class Lead(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "leads"
 
-    shop_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
-    customer_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
-    conversation_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
+    shop_id: Mapped[UUID] = mapped_column(
+        ForeignKey("shops.id"), index=True, nullable=False
+    )
+    customer_id: Mapped[UUID] = mapped_column(
+        ForeignKey("customers.id"), index=True, nullable=False
+    )
+    conversation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("conversations.id"), index=True, nullable=False
+    )
     status: Mapped[str] = mapped_column(String(50), default=LeadStatus.NEW, nullable=False)
     source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     budget_min: Mapped[Optional[float]] = mapped_column(Numeric(12, 2), nullable=True)
     budget_max: Mapped[Optional[float]] = mapped_column(Numeric(12, 2), nullable=True)
     interest_level: Mapped[Optional[int]] = mapped_column(SmallInteger, nullable=True)
+    score: Mapped[Optional[float]] = mapped_column(Numeric(6, 3), nullable=True)
+    selected_product_id: Mapped[Optional[UUID]] = mapped_column(
+        ForeignKey("products.id"), nullable=True
+    )
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Relationships
     shop: Mapped["Shop"] = relationship("Shop")
@@ -89,12 +106,13 @@ class Lead(Base, UUIDMixin, TimestampMixin):
     conversation: Mapped["Conversation"] = relationship(
         "Conversation", back_populates="leads"
     )
+    selected_product: Mapped[Optional["Product"]] = relationship(
+        "Product", foreign_keys=[selected_product_id]
+    )
 
     __table_args__ = (
-        # Index for leads
-        {"ix_leads_shop": True},
-        {"ix_leads_customer": True},
-        {"ix_leads_status": True},
+        Index("ix_leads_shop_status", "shop_id", "status"),
+        Index("ix_leads_conversation", "conversation_id"),
     )
 
     def __repr__(self) -> str:
@@ -105,9 +123,13 @@ class OrderStatus(str):
     """Order status enum."""
     DRAFT = "draft"
     REQUESTED = "requested"
+    PENDING = "pending"
     CONFIRMED = "confirmed"
-    CANCELLED = "cancelled"
+    PAID = "paid"
+    PROCESSING = "processing"
+    SHIPPED = "shipped"
     COMPLETED = "completed"
+    CANCELLED = "cancelled"
 
 
 class Order(Base, UUIDMixin, TimestampMixin):
@@ -115,14 +137,21 @@ class Order(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "orders"
 
-    shop_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
-    customer_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
-    conversation_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
+    shop_id: Mapped[UUID] = mapped_column(
+        ForeignKey("shops.id"), index=True, nullable=False
+    )
+    customer_id: Mapped[UUID] = mapped_column(
+        ForeignKey("customers.id"), index=True, nullable=False
+    )
+    conversation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("conversations.id"), index=True, nullable=False
+    )
     status: Mapped[str] = mapped_column(String(50), default=OrderStatus.DRAFT, nullable=False)
     total_amount: Mapped[float] = mapped_column(Numeric(12, 2), default=0, nullable=False)
     currency: Mapped[str] = mapped_column(String(3), default="RUB", nullable=False)
     customer_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     customer_phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    delivery_city: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     # Relationships
     shop: Mapped["Shop"] = relationship("Shop")
@@ -135,10 +164,8 @@ class Order(Base, UUIDMixin, TimestampMixin):
     )
 
     __table_args__ = (
-        # Index for orders
-        {"ix_orders_shop": True},
-        {"ix_orders_customer": True},
-        {"ix_orders_status": True},
+        Index("ix_orders_shop_status", "shop_id", "status"),
+        Index("ix_orders_conversation", "conversation_id"),
     )
 
     def __repr__(self) -> str:
@@ -150,9 +177,15 @@ class OrderItem(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "order_items"
 
-    order_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
-    product_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
-    variant_id: Mapped[Optional[UUID]] = mapped_column(nullable=True)
+    order_id: Mapped[UUID] = mapped_column(
+        ForeignKey("orders.id"), index=True, nullable=False
+    )
+    product_id: Mapped[UUID] = mapped_column(
+        ForeignKey("products.id"), index=True, nullable=False
+    )
+    variant_id: Mapped[Optional[UUID]] = mapped_column(
+        ForeignKey("product_variants.id"), nullable=True
+    )
     quantity: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     unit_price: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
     total_price: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
@@ -165,9 +198,7 @@ class OrderItem(Base, UUIDMixin, TimestampMixin):
     )
 
     __table_args__ = (
-        # Index for order items
-        {"ix_order_items_order": True},
-        {"ix_order_items_product": True},
+        Index("ix_order_items_order_product", "order_id", "product_id"),
     )
 
     def __repr__(self) -> str:

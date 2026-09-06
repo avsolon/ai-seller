@@ -207,7 +207,7 @@ async def create_message(conversation: Conversation, text: str, sender: str = "c
         message_type=MessageType.TEXT,
         text=text,
         external_message_id=None,
-        metadata={},
+        meta={},
     )
     return message
 
@@ -222,7 +222,7 @@ async def create_knowledge_document(shop: Shop) -> KnowledgeDocument:
         source_uri="/docs/installation_guide.pdf",
         version="1.0",
         status="active",
-        metadata={"author": "AI Seller Team"},
+        meta={"author": "AI Seller Team"},
     )
     return document
 
@@ -234,7 +234,7 @@ async def create_knowledge_chunk(document: KnowledgeDocument) -> KnowledgeChunk:
         document_id=document.id,
         chunk_index=0,
         content="Для установки светодиодных линз необходимо: 1) Снять старые линзы, 2) Установить новые в тот же цоколь, 3) Проверить правильность подключения.",
-        metadata={"page": 1, "section": "installation"},
+        meta={"page": 1, "section": "installation"},
         qdrant_point_id=None,
     )
     return chunk
@@ -280,14 +280,24 @@ async def init_test_data():
     """Initialize test data in the database."""
     setup_logging()
     logger.info("Starting database initialization with test data...")
-    
+
     try:
         async with async_session_maker() as db:
+            # Reuse an already seeded shop (idempotent reruns)
+            existing = (
+                await db.execute(select(Shop).where(Shop.slug == settings.shop_id))
+            ).scalar_one_or_none()
+
+            if existing is not None:
+                logger.info(f"Shop {existing.slug} already initialized. Skipping seed data.")
+                await db.commit()
+                return
+
             # Create shop
-            shop = await create_shop()
+            shop = await create_shop(slug=settings.shop_id)
             db.add(shop)
             await db.flush()
-            logger.info(f"Created shop: {shop.name}")
+            logger.info(f"Created shop: {shop.name} (slug={shop.slug})")
             
             # Create customer
             customer = await create_customer(shop)
