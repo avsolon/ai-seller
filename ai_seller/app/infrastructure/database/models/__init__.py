@@ -19,6 +19,7 @@ from app.infrastructure.database.models.sales_state import SalesStateRecord, Sta
 from app.infrastructure.database.models.agent_run import AgentRun, ToolCall
 from app.infrastructure.database.models.feedback import Feedback
 from app.infrastructure.database.models.evaluation import EvaluationRun, EvaluationResult
+from app.infrastructure.database.models.manager_task import ManagerTask, ManagerTaskStatus
 
 __all__ = [
     # Shop
@@ -64,4 +65,7 @@ __all__ = [
     "Feedback",
     "EvaluationRun",
     "EvaluationResult",
+    # Manager tasks
+    "ManagerTask",
+    "ManagerTaskStatus",
 ]
