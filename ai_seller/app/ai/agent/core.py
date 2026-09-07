@@ -25,8 +25,9 @@ from app.ai.sales import (
 )
 from app.ai.sales.guard import ResponseGuard
 from app.ai.sales.taxonomy import CustomerIntent, SalesStage
+from app.ai.tools import catalog_tools
 from app.core.logging import get_logger
-from app.infrastructure.database.models.agent_run import AgentRun
+from app.infrastructure.database.models.agent_run import AgentRun, ToolCall
 from app.infrastructure.database.models.conversation import Conversation
 
 logger = get_logger(__name__)
@@ -72,9 +73,15 @@ class SellerAgentCore:
         self,
         cache: Optional[Any] = None,
         guard: Optional[ResponseGuard] = None,
+        llm_gateway: Optional[Any] = None,
+        retriever: Optional[Any] = None,
     ) -> None:
         self.cache = cache
         self.guard = guard or ResponseGuard()
+        # Pluggable adapters; when None the real GigaChat/Ollama and Qdrant
+        # adapters are created lazily (and degrade gracefully when unavailable).
+        self._llm_gateway = llm_gateway
+        self._retriever = retriever
 
     # --- public pipeline ---------------------------------------------------
     async def process_message(
@@ -102,7 +109,9 @@ class SellerAgentCore:
         issues = self.validate_response(reply, state)
 
         await self.persist_result(
-            db, conversation, state, decision, reply, state_before, generation
+            db, conversation, state, decision, reply, state_before, generation,
+            tools=tools_facts,
+            retrieved=[p.get("id") for p in patterns],
         )
 
         if state.handoff_requested:
@@ -213,13 +222,16 @@ class SellerAgentCore:
         patterns: List[Dict[str, Any]] = []
         knowledge: List[Dict[str, Any]] = []
         try:
-            from app.ai.rag.retriever import RAGRetriever
+            if self._retriever is not None:
+                retriever = self._retriever
+            else:
+                from app.ai.rag.retriever import RAGRetriever
 
-            retriever = RAGRetriever()
-            if decision.rag_query or decision.intent is not None:
+                retriever = RAGRetriever()
+            if decision.intent is not None:
                 patterns = await retriever.search_sales_dialogues(
-                    query=text,
-                    intent=decision.intent.value if decision.intent else None,
+                    query=decision.rag_query or text,
+                    intent=decision.intent.value,
                     sales_state=decision.stage.value,
                     limit=3,
                 )
@@ -242,67 +254,61 @@ class SellerAgentCore:
         state: SalesState,
         products: List[Any],
     ) -> List[Dict[str, Any]]:
-        """Deterministic tool calls over the catalog/products passed in."""
+        """Deterministic tool calls backed by the catalog (facts, not the LLM)."""
         results: List[Dict[str, Any]] = []
-        wanted = decision.tool_calls
+        intent = decision.intent
+        wanted = set(decision.tool_calls)
 
-        if not products and ("search_products" in wanted or "get_price" in wanted):
-            from sqlalchemy import select
+        budget = float(state.need.budget) if state.need.budget is not None else None
+        selected_id = None
+        if state.selected_product is not None and state.selected_product.product_id:
+            selected_id = _as_uuid(state.selected_product.product_id)
 
-            from app.infrastructure.database.models.product import Product
+        if "search_products" in wanted or intent in (
+            CustomerIntent.PRODUCT_RECOMMENDATION,
+            CustomerIntent.PRODUCT_COMPARISON,
+            CustomerIntent.PURCHASE_INTENT,
+        ):
+            payload = await catalog_tools.search_products(db, budget=budget, limit=3)
+            if payload:
+                results.append({"tool": "search_products", "result": payload})
 
-            result = await db.execute(
-                select(Product).where(Product.is_active.is_(True))
+        if selected_id is not None and (
+            "get_price" in wanted
+            or intent in (CustomerIntent.PRICE_QUERY, CustomerIntent.PRICE_OBJECTION)
+        ):
+            payload = await catalog_tools.get_price(db, selected_id)
+            if payload:
+                results.append({"tool": "get_price", "result": payload})
+
+        if selected_id is not None and "get_stock" in wanted:
+            payload = await catalog_tools.get_stock(db, selected_id)
+            if payload:
+                results.append({"tool": "get_stock", "result": payload})
+
+        if "check_compatibility" in wanted or intent == CustomerIntent.VEHICLE_COMPATIBILITY:
+            payload = await catalog_tools.check_compatibility(
+                db,
+                make=state.vehicle.make,
+                model=state.vehicle.model,
+                year=state.vehicle.year,
             )
-            products = list(result.scalars().all())
+            results.append({"tool": "check_compatibility", "result": payload})
 
-        if "search_products" in wanted or decision.intent == CustomerIntent.PRODUCT_RECOMMENDATION:
-            shown = sorted(products, key=lambda p: float(p.price))[:3]
+        # Kept for callers that pass a preloaded product list (fast path)
+        if not results and products and intent == CustomerIntent.PRODUCT_RECOMMENDATION:
             results.append(
                 {
                     "tool": "search_products",
                     "result": [
                         {
+                            "product_id": str(p.id),
                             "name": p.name,
                             "price": float(p.price),
-                            "stock": p.stock_quantity,
-                            "category": p.category,
+                            "stock_quantity": p.stock_quantity,
                         }
-                        for p in shown
+                        for p in products[:3]
                     ],
-                }
-            )
-
-        if "get_price" in wanted or decision.intent == CustomerIntent.PRICE_QUERY:
-            if state.selected_product is not None:
-                match = next(
-                    (p for p in products if p.id == _as_uuid(state.selected_product.product_id)),
-                    None,
-                )
-                if match is not None:
-                    results.append(
-                        {"tool": "get_price", "result": {"name": match.name, "price": float(match.price)}}
-                    )
-
-        if "get_stock" in wanted and products:
-            shown = sorted(products, key=lambda p: float(p.price))[:3]
-            results.append(
-                {
-                    "tool": "get_stock",
-                    "result": [
-                        {"name": p.name, "stock_quantity": p.stock_quantity} for p in shown
-                    ],
-                }
-            )
-
-        if "check_compatibility" in wanted:
-            results.append(
-                {
-                    "tool": "check_compatibility",
-                    "result": {
-                        "verified": state.vehicle.compatibility_verified,
-                        "vehicle": state.vehicle.is_identified,
-                    },
                 }
             )
         return results
@@ -332,10 +338,26 @@ class SellerAgentCore:
 
     async def _call_llm(self, prompt: str) -> Optional[Dict[str, Any]]:
         try:
+            start = time.monotonic()
+            if self._llm_gateway is not None:
+                raw = await asyncio.wait_for(self._llm_gateway(prompt), timeout=GENERATION_TIMEOUT)
+                if isinstance(raw, dict):
+                    return {
+                        "text": str(raw.get("text", "")).strip(),
+                        "provider": str(raw.get("provider", "test")),
+                        "model": str(raw.get("model", "test")),
+                        "latency_ms": int(raw.get("latency_ms", 0)),
+                    }
+                return {
+                    "text": str(getattr(raw, "text", "")).strip(),
+                    "provider": str(getattr(raw, "provider", "test")),
+                    "model": str(getattr(raw, "model", "test")),
+                    "latency_ms": int((time.monotonic() - start) * 1000),
+                }
+
             from app.ai.llm.manager import LLMManager
 
             manager = LLMManager()
-            start = time.monotonic()
             response = await asyncio.wait_for(
                 manager.generate(prompt=prompt, temperature=0.4, max_tokens=700),
                 timeout=GENERATION_TIMEOUT,
@@ -366,6 +388,8 @@ class SellerAgentCore:
         reply: str,
         state_before: Dict[str, Any],
         generation: Optional[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        retrieved: Optional[List[Any]] = None,
     ) -> None:
         service = SalesStateService(db, cache=self.cache)
         await service.save(state, reason=decision.intent.value if decision.intent else "message")
@@ -374,18 +398,31 @@ class SellerAgentCore:
         model = (generation or {}).get("model", "fallback")
         latency_ms = (generation or {}).get("latency_ms", 0)
 
-        db.add(
-            AgentRun(
-                conversation_id=conversation.id,
-                model_provider=provider,
-                model_name=model,
-                prompt_version="seller-v1",
-                state_before=state_before,
-                state_after=state.to_dict(),
-                response=reply,
-                latency_ms=latency_ms,
-            )
+        run = AgentRun(
+            conversation_id=conversation.id,
+            model_provider=provider,
+            model_name=model,
+            prompt_version="seller-v1",
+            state_before=state_before,
+            state_after=state.to_dict(),
+            retrieved_chunks=[str(r) for r in (retrieved or [])],
+            response=reply,
+            latency_ms=latency_ms,
         )
+        db.add(run)
+        await db.flush()
+
+        for call in tools or []:
+            db.add(
+                ToolCall(
+                    agent_run_id=run.id,
+                    tool_name=str(call.get("tool")),
+                    arguments={},
+                    result=call.get("result"),
+                    success=True,
+                    latency_ms=None,
+                )
+            )
         await db.flush()
 
 
