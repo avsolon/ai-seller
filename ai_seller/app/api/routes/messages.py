@@ -113,23 +113,21 @@ async def list_messages(
     }
 
 
-@router.post("/{conversation_id}/messages")
-async def send_message(
-    conversation_id: UUID,
-    request: MessageSend,
-    db: DatabaseSession,
-    shop_id: ShopId,
+async def process_conversation_message(
+    db: AsyncSession,
+    conversation: Conversation,
+    text: str,
+    external_message_id: Optional[str] = None,
+    channel: Optional[str] = None,
 ) -> dict:
-    """Send a customer message and return the AI reply."""
-    conversation = await _get_conversation(db, conversation_id, shop_id)
-
-    # Persist the customer message first so the agent can read full history
+    """Persist a customer message, run the agent and return user+agent messages."""
     user_message = Message(
         conversation_id=conversation.id,
         sender_type=SenderType.CUSTOMER,
         message_type=MessageType.TEXT,
-        text=request.text,
-        external_message_id=request.external_message_id,
+        channel=channel,
+        text=text,
+        external_message_id=external_message_id,
         meta={},
     )
     db.add(user_message)
@@ -137,12 +135,13 @@ async def send_message(
     await db.refresh(user_message)
     await db.refresh(conversation)
 
-    reply_text = await _try_agent_reply(db, conversation, request.text)
+    reply_text = await _try_agent_reply(db, conversation, text)
 
     agent_message = Message(
         conversation_id=conversation.id,
         sender_type=SenderType.AGENT,
         message_type=MessageType.TEXT,
+        channel=channel,
         text=reply_text,
         meta={},
     )
@@ -160,3 +159,20 @@ async def send_message(
         "handoff": conversation.status
         in (ConversationStatus.WAITING_MANAGER, ConversationStatus.HANDED_OFF),
     }
+
+
+@router.post("/{conversation_id}/messages")
+async def send_message(
+    conversation_id: UUID,
+    request: MessageSend,
+    db: DatabaseSession,
+    shop_id: ShopId,
+) -> dict:
+    """Send a customer message and return the AI reply."""
+    conversation = await _get_conversation(db, conversation_id, shop_id)
+    return await process_conversation_message(
+        db,
+        conversation,
+        request.text,
+        external_message_id=request.external_message_id,
+    )

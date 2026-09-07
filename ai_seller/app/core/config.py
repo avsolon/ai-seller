@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     )
 
     # LLM Provider
-    llm_provider: str = Field(default="ollama", description="Default LLM provider")
+    llm_provider: str = Field(default="gigachat", description="Default LLM provider")
     llm_primary: Optional[str] = Field(
         default=None, description="Primary LLM provider (falls back to llm_provider)"
     )
@@ -78,6 +78,7 @@ class Settings(BaseSettings):
     gigachat_scope: str = Field(
         default="GIGACHAT_API_PERS", description="GigaChat OAuth scope"
     )
+    gigachat_model: str = Field(default="GigaChat", description="Default GigaChat model")
 
     # Telegram
     telegram_bot_token: Optional[str] = Field(default=None, description="Telegram bot token")

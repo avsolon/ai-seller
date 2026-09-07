@@ -228,6 +228,7 @@ class GigaChatProvider(LLMProvider):
         self.api_url = settings.gigachat_url
         self.auth_url = settings.gigachat_auth_url
         self.scope = settings.gigachat_scope
+        self.default_model = settings.gigachat_model
         self.access_token: Optional[str] = None
 
     async def _get_access_token(self) -> str:
@@ -278,7 +279,7 @@ class GigaChatProvider(LLMProvider):
         import time
         
         access_token = await self._get_access_token()
-        model = model or "GigaChat"
+        model = model or self.default_model
         
         start_time = time.time()
         
