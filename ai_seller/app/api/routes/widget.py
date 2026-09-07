@@ -1,21 +1,26 @@
-"""Website widget API (doc 13): session/messages/history/handoff/config.
+"""Website widget API (doc 13): session/messages/events/history/handoff/config.
 
-All AI runs through the same SellerAgent core; the widget only sends and renders.
-Session id = conversation id for MVP (history lives in PostgreSQL).
+Session id = conversation id for MVP. Message replies are also published to an
+SSE event stream (open GET /events before posting a message).
 """
 
 from __future__ import annotations
 
-from typing import Optional
+import asyncio
+import time
+from pathlib import Path
+from typing import Dict, List, Optional
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.agent.orchestrator import process_message
 from app.ai.agent.response import AgentResponse, build_response
+from app.api.widget_events import next_event, push_event, split_text
 from app.api.dependencies import DatabaseSession, ShopId, resolve_shop
 from app.channels.service import MessageApplicationService
 from app.core.config import settings
@@ -32,6 +37,22 @@ from app.infrastructure.database.models.customer import Customer
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+_UPLOAD_DIR = Path(__file__).resolve().parents[3] / "uploads" / "widget"
+
+# In-memory sliding-window rate limiting (session) — replace with Redis in prod
+_RATE: Dict[str, List[float]] = {}
+
+
+def _check_rate(key: str, limit: int, window: float) -> bool:
+    now = time.monotonic()
+    hits = [t for t in _RATE.get(key, []) if now - t < window]
+    if len(hits) >= limit:
+        _RATE[key] = hits
+        return False
+    hits.append(now)
+    _RATE[key] = hits
+    return True
 
 
 class WidgetSessionRequest(BaseModel):
@@ -69,7 +90,7 @@ def _widget_config() -> dict:
             "text": "Здравствуйте! Помогу подобрать линзы для вашего автомобиля."
         },
         "features": {
-            "attachments": False,
+            "attachments": True,
             "quick_replies": True,
             "product_cards": True,
             "handoff": True,
@@ -96,9 +117,7 @@ async def _get_or_create_agent(db: AsyncSession, shop) -> Agent:
     return agent
 
 
-async def _get_conversation(
-    db: AsyncSession, session_id: UUID, shop_id: str
-) -> Conversation:
+async def _get_conversation(db: AsyncSession, session_id: UUID, shop_id: str) -> Conversation:
     shop = await resolve_shop(db, shop_id)
     query = select(Conversation).where(Conversation.id == session_id)
     if shop is not None:
@@ -107,6 +126,29 @@ async def _get_conversation(
     if conversation is None:
         raise HTTPException(status_code=404, detail="Session not found")
     return conversation
+
+
+async def _publish_response(session_id: str, agent_message: Message, response: AgentResponse) -> None:
+    """Publish typed SSE events for a finished widget turn."""
+    session = str(session_id)
+    await push_event(session, "message_start", {"message_id": str(agent_message.id)})
+    for chunk in split_text(response.text):
+        await push_event(session, "message_delta", {"text": chunk})
+    for product in response.products:
+        await push_event(session, "product_card", {"product": product})
+    if response.quick_replies:
+        await push_event(session, "quick_replies", {"items": response.quick_replies})
+    if response.handoff:
+        await push_event(session, "handoff", {"status": "created", "reason": "agent_handoff"})
+    await push_event(
+        session,
+        "message_end",
+        {
+            "message_id": str(agent_message.id),
+            "stage": response.stage,
+            "handoff": response.handoff,
+        },
+    )
 
 
 @router.post("/session", response_model=WidgetSessionResponse)
@@ -158,7 +200,10 @@ async def send_widget_message(
     db: DatabaseSession,
     shop_id: ShopId,
 ) -> dict:
-    """Process a widget message and return the structured AgentResponse."""
+    """Process a widget message and return/publish the structured AgentResponse."""
+    if not _check_rate(f"session:{session_id}", 30, 60):
+        raise HTTPException(status_code=429, detail={"code": "RATE_LIMITED"})
+
     conversation = await _get_conversation(db, session_id, shop_id)
 
     user_message = Message(
@@ -197,11 +242,40 @@ async def send_widget_message(
     conversation.last_message_at = agent_message.created_at
     await db.flush()
 
+    await _publish_response(session_id, agent_message, response)
+
     return {
         "message_id": str(agent_message.id),
         "conversation_id": str(conversation.id),
         "response": response.to_dict(),
     }
+
+
+@router.get("/session/{session_id}/events")
+async def widget_events(
+    session_id: UUID,
+    db: DatabaseSession,
+    shop_id: ShopId,
+) -> StreamingResponse:
+    """SSE stream: open before posting a message to receive typing/deltas/end."""
+    await _get_conversation(db, session_id, shop_id)
+    session = str(session_id)
+
+    async def event_stream():
+        yield "retry: 15000\n\n"
+        while True:
+            item = await next_event(session, timeout=15.0)
+            if item is None:
+                yield ": keep-alive\n\n"
+                continue
+            event, data = item
+            yield f"event: {event}\ndata: {data}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/session/{session_id}/messages")
@@ -241,7 +315,37 @@ async def widget_handoff(
     conversation = await _get_conversation(db, session_id, shop_id)
     service = MessageApplicationService()
     await service.request_handoff(db, conversation, reason=request.reason)
+    await push_event(
+        str(session_id),
+        "handoff",
+        {"status": "created", "reason": request.reason},
+    )
     return {"status": "created", "message": "Передал ваш вопрос менеджеру."}
+
+
+@router.post("/session/{session_id}/attachments")
+async def widget_upload_attachment(
+    session_id: UUID,
+    db: DatabaseSession,
+    shop_id: ShopId,
+    file: UploadFile = File(...),
+) -> dict:
+    """Store an attachment (photo of the headlight, etc.)."""
+    await _get_conversation(db, session_id, shop_id)
+
+    _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    ext = Path(file.filename or "").suffix or ""
+    attachment_id = uuid4()
+    target = _UPLOAD_DIR / f"{attachment_id}{ext}"
+    content = await file.read()
+    target.write_bytes(content)
+
+    return {
+        "attachment_id": str(attachment_id),
+        "type": "image" if file.content_type and file.content_type.startswith("image/") else "document",
+        "status": "uploaded",
+        "size_bytes": len(content),
+    }
 
 
 @router.get("/config/{shop_id}")

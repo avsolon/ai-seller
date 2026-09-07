@@ -224,12 +224,29 @@ class GigaChatProvider(LLMProvider):
     def __init__(self):
         """Initialize GigaChat provider."""
         super().__init__("gigachat")
-        self.api_key = settings.gigachat_api_key
+        self.client_id = settings.gigachat_client_id
+        self.client_secret = settings.gigachat_client_secret
+        self.auth_key = settings.gigachat_auth_key
+        self.legacy_key = settings.gigachat_api_key
         self.api_url = settings.gigachat_url
         self.auth_url = settings.gigachat_auth_url
         self.scope = settings.gigachat_scope
         self.default_model = settings.gigachat_model
         self.access_token: Optional[str] = None
+
+    def _basic_credentials(self) -> str:
+        """Return the value to send as `Authorization: Basic <...>`."""
+        if self.auth_key:
+            return self.auth_key
+        if self.client_id and self.client_secret:
+            import base64
+
+            raw = f"{self.client_id}:{self.client_secret}".encode("utf-8")
+            return base64.b64encode(raw).decode("utf-8")
+        if self.legacy_key:
+            # Legacy mode treated the key as the client id
+            return self.legacy_key
+        return ""
 
     async def _get_access_token(self) -> str:
         """Get GigaChat access token."""
@@ -237,19 +254,17 @@ class GigaChatProvider(LLMProvider):
             return self.access_token
         
         import httpx
-        import base64
         
         try:
-            # Encode credentials
-            auth_string = f"{self.api_key}:"
-            auth_bytes = auth_string.encode("utf-8")
-            auth_base64 = base64.b64encode(auth_bytes).decode("utf-8")
-            
+            basic = self._basic_credentials()
+            if not basic:
+                raise Exception("GigaChat credentials are not configured")
+
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     self.auth_url,
                     headers={
-                        "Authorization": f"Basic {auth_base64}",
+                        "Authorization": f"Basic {basic}",
                         "Content-Type": "application/x-www-form-urlencoded",
                     },
                     data=f"scope={self.scope}",

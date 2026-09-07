@@ -66,7 +66,18 @@ class Settings(BaseSettings):
     )
 
     # GigaChat
-    gigachat_api_key: Optional[str] = Field(default=None, description="GigaChat API key")
+    gigachat_client_id: Optional[str] = Field(default=None, description="GigaChat client id")
+    gigachat_client_secret: Optional[str] = Field(
+        default=None, description="GigaChat client secret"
+    )
+    gigachat_auth_key: Optional[str] = Field(
+        default=None,
+        description="Pre-encoded GigaChat Basic credential "
+        "(base64 of client_id:client_secret)",
+    )
+    gigachat_api_key: Optional[str] = Field(
+        default=None, description="Legacy GigaChat credential"
+    )
     gigachat_url: str = Field(
         default="https://gigachat.devices.sberbank.ru/api/v1",
         description="GigaChat API URL",
