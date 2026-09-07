@@ -178,6 +178,18 @@ class TestCoreAdapters:
         ).scalar_one()
         assert await count_tool_calls(db_session, run.id) >= 1
 
+    async def test_delivery_tool_via_core(self, db_session):
+        conversation = await make_env(db_session)
+        core = SellerAgentCore(llm_gateway=FakeLLM("Отправляем в день оплаты до 15:00."),
+                               retriever=FakeRetriever())
+        result = await core.process_message(
+            db_session, conversation, "Сколько дней доставка?", allow_llm=True
+        )
+        delivery = next((t for t in result["tools"] if t["tool"] == "get_delivery_info"), None)
+        assert delivery is not None
+        assert delivery["success"] is True
+        assert "Доставка" in delivery["result"]["policy"]
+
     async def test_check_compatibility_tool(self, db_session):
         conversation = await make_env(db_session, with_compat=True)
         llm = FakeLLM("Для вашей конфигурации есть подтверждённая совместимость.")

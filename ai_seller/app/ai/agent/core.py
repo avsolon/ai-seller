@@ -25,7 +25,7 @@ from app.ai.sales import (
 )
 from app.ai.sales.guard import ResponseGuard
 from app.ai.sales.taxonomy import CustomerIntent, SalesStage
-from app.ai.tools import catalog_tools
+from app.ai.tools import ToolContext, build_default_registry
 from app.core.logging import get_logger
 from app.infrastructure.database.models.agent_run import AgentRun, ToolCall
 from app.infrastructure.database.models.conversation import Conversation
@@ -94,6 +94,7 @@ class SellerAgentCore:
         guard: Optional[ResponseGuard] = None,
         llm_gateway: Optional[Any] = None,
         retriever: Optional[Any] = None,
+        tools: Optional[Any] = None,
     ) -> None:
         self.cache = cache
         self.guard = guard or ResponseGuard()
@@ -101,6 +102,12 @@ class SellerAgentCore:
         # adapters are created lazily (and degrade gracefully when unavailable).
         self._llm_gateway = llm_gateway
         self._retriever = retriever
+        self._tools = tools
+
+    def _registry(self):
+        if self._tools is None:
+            self._tools = build_default_registry()
+        return self._tools
 
     # --- public pipeline ---------------------------------------------------
     async def process_message(
@@ -119,7 +126,7 @@ class SellerAgentCore:
         decision = await self.decide_action(state, intent)
 
         patterns, knowledge = await self.retrieve_sales_knowledge(decision, text)
-        tools_facts = await self.call_tools(db, decision, state, products or [])
+        tools_facts = await self.call_tools(db, conversation, decision, state, products or [])
 
         reply, generation = await self.generate_response(
             decision, text, state, patterns, knowledge, tools_facts,
@@ -270,68 +277,84 @@ class SellerAgentCore:
     async def call_tools(
         self,
         db: AsyncSession,
+        conversation: Conversation,
         decision: AgentDecision,
         state: SalesState,
         products: List[Any],
     ) -> List[Dict[str, Any]]:
-        """Deterministic tool calls backed by the catalog (facts, not the LLM)."""
+        """Execute the allowed tools via the Tool Registry (facts, not the LLM)."""
+        registry = self._registry()
+        context = ToolContext(
+            db=db,
+            conversation=conversation,
+            state=state,
+            customer_id=conversation.customer_id,
+        )
+
         results: List[Dict[str, Any]] = []
-        intent = decision.intent
-        wanted = set(decision.tool_calls)
+        for name in decision.tool_calls:
+            tool = registry.get(name)
+            if tool is None:
+                # Authorization: never execute a tool outside the registry.
+                logger.warning(f"Unauthorized tool call blocked: {name}")
+                results.append(
+                    {
+                        "tool": name,
+                        "success": False,
+                        "result": None,
+                        "error": "unauthorized_tool",
+                    }
+                )
+                continue
+            arguments = self._tool_arguments(name, decision, state)
+            result = await tool.execute(arguments, context)
+            # Do not surface "missing product_id"-style errors when no argument
+            # was available for the tool in the first place.
+            if result.error and not arguments:
+                continue
+            results.append(result.to_dict(name))
 
-        budget = float(state.need.budget) if state.need.budget is not None else None
-        selected_id = None
-        if state.selected_product is not None and state.selected_product.product_id:
-            selected_id = _as_uuid(state.selected_product.product_id)
-
-        if "search_products" in wanted or intent in (
-            CustomerIntent.PRODUCT_RECOMMENDATION,
-            CustomerIntent.PRODUCT_COMPARISON,
-            CustomerIntent.PURCHASE_INTENT,
+        # Fast path for callers that preloaded a product list when no DB product row
+        if (
+            not results
+            and products
+            and decision.intent == CustomerIntent.PRODUCT_RECOMMENDATION
         ):
-            payload = await catalog_tools.search_products(db, budget=budget, limit=3)
-            if payload:
-                results.append({"tool": "search_products", "result": payload})
-
-        if selected_id is not None and (
-            "get_price" in wanted
-            or intent in (CustomerIntent.PRICE_QUERY, CustomerIntent.PRICE_OBJECTION)
-        ):
-            payload = await catalog_tools.get_price(db, selected_id)
-            if payload:
-                results.append({"tool": "get_price", "result": payload})
-
-        if selected_id is not None and "get_stock" in wanted:
-            payload = await catalog_tools.get_stock(db, selected_id)
-            if payload:
-                results.append({"tool": "get_stock", "result": payload})
-
-        if "check_compatibility" in wanted or intent == CustomerIntent.VEHICLE_COMPATIBILITY:
-            payload = await catalog_tools.check_compatibility(
-                db,
-                make=state.vehicle.make,
-                model=state.vehicle.model,
-                year=state.vehicle.year,
-            )
-            results.append({"tool": "check_compatibility", "result": payload})
-
-        # Kept for callers that pass a preloaded product list (fast path)
-        if not results and products and intent == CustomerIntent.PRODUCT_RECOMMENDATION:
             results.append(
                 {
                     "tool": "search_products",
-                    "result": [
-                        {
-                            "product_id": str(p.id),
-                            "name": p.name,
-                            "price": float(p.price),
-                            "stock_quantity": p.stock_quantity,
-                        }
-                        for p in products[:3]
-                    ],
+                    "success": True,
+                    "result": {
+                        "products": [
+                            {
+                                "product_id": str(p.id),
+                                "name": p.name,
+                                "price": float(p.price),
+                                "stock_quantity": p.stock_quantity,
+                            }
+                            for p in products[:3]
+                        ]
+                    },
+                    "error": None,
                 }
             )
         return results
+
+    def _tool_arguments(
+        self, name: str, decision: AgentDecision, state: SalesState
+    ) -> Dict[str, Any]:
+        if name == "search_products":
+            return {
+                "budget": float(state.need.budget) if state.need.budget is not None else None,
+                "limit": 3,
+            }
+        if name in ("get_product", "get_product_price", "get_product_stock"):
+            if state.selected_product is not None and state.selected_product.product_id:
+                return {"product_id": str(state.selected_product.product_id)}
+            return {}
+        if name == "create_order":
+            return {"delivery_city": state.purchase.delivery_city}
+        return {}
 
     async def generate_response(
         self,
@@ -458,12 +481,17 @@ def _as_uuid(value: Any) -> UUID:
 def _route_tools(intent: Optional[CustomerIntent]) -> List[str]:
     mapping = {
         CustomerIntent.VEHICLE_COMPATIBILITY: ["check_compatibility"],
-        CustomerIntent.PRODUCT_RECOMMENDATION: ["search_products", "get_price"],
-        CustomerIntent.PRODUCT_COMPARISON: ["search_products", "get_price"],
-        CustomerIntent.PRICE_QUERY: ["get_price"],
-        CustomerIntent.PRICE_OBJECTION: ["get_price"],
+        CustomerIntent.PRODUCT_RECOMMENDATION: ["search_products", "get_product_price"],
+        CustomerIntent.PRODUCT_COMPARISON: ["search_products", "get_product_price"],
+        CustomerIntent.PRODUCT_INFO: ["search_products"],
+        CustomerIntent.PRICE_QUERY: ["get_product_price"],
+        CustomerIntent.PRICE_OBJECTION: ["get_product_price"],
+        CustomerIntent.TRUST_OBJECTION: ["get_warranty_info"],
+        CustomerIntent.DELIVERY_QUERY: ["get_delivery_info"],
+        CustomerIntent.WARRANTY_QUERY: ["get_warranty_info"],
         CustomerIntent.PURCHASE_INTENT: ["search_products"],
-        CustomerIntent.ORDER_REQUEST: [],
+        CustomerIntent.ORDER_REQUEST: ["create_order"],
+        CustomerIntent.HANDOFF_REQUEST: ["request_handoff"],
     }
     return mapping.get(intent, [])  # type: ignore[arg-type]
 
