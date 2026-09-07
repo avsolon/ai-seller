@@ -6,7 +6,6 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.api.dependencies import DatabaseSession, ShopId, resolve_shop
 from app.api.schemas import MessageSend
@@ -17,7 +16,6 @@ from app.infrastructure.database.models.conversation import (
     MessageType,
     SenderType,
 )
-from app.infrastructure.database.models.customer import Customer, CustomerProfile
 from app.infrastructure.database.models.product import Product
 from app.core.logging import get_logger
 
@@ -64,39 +62,23 @@ async def _try_agent_reply(
     )
     try:
         # Lazy import: the AI stack (qdrant/redis/llm) is optional for the skeleton.
-        from app.ai.agent.seller_agent import SellerAgent
-
-        customer_result = await db.execute(
-            select(Customer)
-            .where(Customer.id == conversation.customer_id)
-            .options(
-                selectinload(Customer.profile).selectinload(CustomerProfile.vehicle)
-            )
-        )
-        customer = customer_result.scalar_one_or_none()
+        from app.ai.agent.orchestrator import process_message
 
         product_result = await db.execute(
-            select(Product)
-            .where(
+            select(Product).where(
                 Product.shop_id == conversation.shop_id,
                 Product.is_active.is_(True),
             )
-            .options(selectinload(Product.compatibilities))
         )
         products = list(product_result.scalars().all())
 
-        agent = SellerAgent()
-        response = await agent.process_message(
-            message=user_message,
+        result = await process_message(
+            db=db,
             conversation=conversation,
-            customer=customer,
-            available_products=products,
+            text=user_message,
+            products=products,
         )
-
-        if conversation.status in (ConversationStatus.WAITING_MANAGER,):
-            conversation.status = ConversationStatus.WAITING_MANAGER
-
-        text = (response.text or "").strip()
+        text = (result.get("reply") or "").strip()
         return text if text else fallback
     except Exception as e:
         logger.warning(f"AI agent unavailable, using fallback reply: {e}")
@@ -175,5 +157,6 @@ async def send_message(
         "user_message": _serialize_message(user_message),
         "agent_message": _serialize_message(agent_message),
         "sales_state": conversation.sales_state,
-        "handoff": conversation.status == ConversationStatus.WAITING_MANAGER,
+        "handoff": conversation.status
+        in (ConversationStatus.WAITING_MANAGER, ConversationStatus.HANDED_OFF),
     }

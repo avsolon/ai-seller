@@ -91,7 +91,8 @@ def run_eval(
     passed = 0
     for case in cases:
         predicted = classify(case)
-        intent_ok = bool(predicted) and str(predicted).upper() == case.expected_intent.upper()
+        raw = getattr(predicted, "value", predicted)
+        intent_ok = bool(raw) and str(raw).upper() == case.expected_intent.upper()
         behavior_ok = behavior_check(case, predicted or "") if behavior_check else True
         ok = intent_ok and behavior_ok
         passed += int(ok)
@@ -100,7 +101,7 @@ def run_eval(
                 "id": case.id,
                 "category": case.category,
                 "expected_intent": case.expected_intent,
-                "predicted_intent": predicted,
+                "predicted_intent": raw,
                 "intent_ok": intent_ok,
                 "behavior_ok": behavior_ok,
                 "passed": ok,

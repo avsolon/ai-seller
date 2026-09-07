@@ -23,6 +23,12 @@ from app.ai.sales.transitions import (
     next_question,
     route_intent,
 )
+from app.ai.sales.service import (
+    MemoryStateCache,
+    RedisStateCache,
+    SalesStateService,
+    state_cache,
+)
 
 __all__ = [
     "SalesStage",
@@ -42,4 +48,8 @@ __all__ = [
     "missing_slots",
     "next_question",
     "route_intent",
+    "SalesStateService",
+    "MemoryStateCache",
+    "RedisStateCache",
+    "state_cache",
 ]
