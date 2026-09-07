@@ -130,6 +130,16 @@ async def count_tool_calls(db, run_id):
 
 
 class TestCoreAdapters:
+    async def test_greeting_skips_sales_rag(self, db_session):
+        conversation = await make_env(db_session)
+        rag = FakeRetriever()
+        core = SellerAgentCore(llm_gateway=FakeLLM("Здравствуйте!"), retriever=rag)
+        await core.process_message(
+            db_session, conversation, "Здравствуйте!", allow_llm=True
+        )
+        # GREETING is not in RAG_REQUIRED_INTENTS -> no sales retrieval
+        assert rag.sales_calls == 0
+
     async def test_llm_and_rag_are_used(self, db_session):
         conversation = await make_env(db_session)
         llm = FakeLLM("Да, могу показать более доступный вариант.")

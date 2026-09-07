@@ -21,8 +21,8 @@ class RAGRetriever:
             api_key=settings.qdrant_api_key,
             timeout=settings.qdrant_timeout,
         )
-        self.knowledge_collection = "product_knowledge"
-        self.sales_collection = "sales_dialogues"
+        self.knowledge_collection = settings.qdrant_knowledge_collection
+        self.sales_collection = settings.qdrant_sales_collection
         self._embedding_model = None
 
     async def search_knowledge(
@@ -94,17 +94,30 @@ class RAGRetriever:
                     return None
                 return str(value).strip().lower()
 
-            filters = {
-                "intent": _norm(intent),
-                "sales_stage": _norm(sales_state),
-                "customer_type": _norm(customer_type),
-                "shop_id": settings.shop_id,
-            }
-            qdrant_filters = self._prepare_filters(filters)
+            norm_intent = _norm(intent)
+            norm_stage = _norm(sales_state)
+            norm_customer = _norm(customer_type)
 
-            # Search in Qdrant (strict, filtered)
-            results = []
-            if qdrant_filters is not None:
+            # Soft cascade: intent+stage -> intent -> stage -> semantic (doc 10)
+            steps: List[Optional[Dict[str, Optional[str]]]] = [
+                {
+                    "intent": norm_intent,
+                    "sales_stage": norm_stage,
+                    "customer_type": norm_customer,
+                }
+                if norm_intent or norm_stage or norm_customer
+                else None,
+                {"intent": norm_intent} if norm_intent else None,
+                {"sales_stage": norm_stage} if norm_stage else None,
+            ]
+
+            results: List[Dict[str, Any]] = []
+            for step in steps:
+                filters = {"shop_id": settings.shop_id}
+                if step:
+                    filters.update({k: v for k, v in step.items() if v})
+                qdrant_filters = self._prepare_filters(filters)
+
                 search_result = await self.qdrant_client.search(
                     collection_name=self.sales_collection,
                     query_vector=embedding,
@@ -113,18 +126,13 @@ class RAGRetriever:
                     with_vectors=False,
                     query_filter=qdrant_filters,
                 )
-                results = [r.payload for r in search_result]
-
-            # Fallback: no filters (or too strict) -> plain semantic search
-            if not results:
-                search_result = await self.qdrant_client.search(
-                    collection_name=self.sales_collection,
-                    query_vector=embedding,
-                    limit=limit,
-                    with_payload=True,
-                    with_vectors=False,
-                )
-                results = [r.payload for r in search_result]
+                items = [
+                    {**(dict(r.payload) if r.payload else {}), "score": r.score}
+                    for r in search_result
+                ]
+                if items:
+                    results = items
+                    break
 
             return results
 

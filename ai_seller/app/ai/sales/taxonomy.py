@@ -159,3 +159,20 @@ def coerce_stage(value: str) -> SalesStage:
         return SalesStage(str(value))
     except ValueError:
         return SalesStage(str(value).upper())
+
+
+def canonical_stage(value: str) -> str:
+    """Canonical (uppercase) stage value used in DB sales_states and Qdrant."""
+    return coerce_stage(value).value
+
+
+def canonical_intent(value: str) -> str:
+    """Canonical (uppercase) intent value."""
+    return coerce_intent(value).value
+
+
+def filter_value(value: Optional[str]) -> Optional[str]:
+    """Normalize a value for Qdrant payload matching (indexed lowercase)."""
+    if not value:
+        return None
+    return str(value).strip().lower()

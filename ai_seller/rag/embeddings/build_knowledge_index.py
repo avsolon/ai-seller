@@ -34,7 +34,7 @@ class KnowledgeRAGIndexer:
             timeout=settings.qdrant_timeout,
         )
         self.embedding_model = SentenceTransformer(settings.embedding_model)
-        self.collection_name = "product_knowledge"
+        self.collection_name = settings.qdrant_knowledge_collection
 
     async def initialize_collection(self) -> None:
         from qdrant_client import models

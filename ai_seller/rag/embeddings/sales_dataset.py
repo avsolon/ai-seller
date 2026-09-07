@@ -99,3 +99,30 @@ def iter_dataset(path: Path) -> Iterator[Dict[str, Any]]:
                 yield json.loads(line)
             except json.JSONDecodeError:
                 continue
+
+
+def validate_record(record: Dict[str, Any]) -> List[str]:
+    """Return a list of problems found in a single sales record."""
+    errors: List[str] = []
+    if not record.get("id"):
+        errors.append("missing id")
+    if not record.get("scenario"):
+        errors.append("missing scenario")
+    if not record.get("intent"):
+        errors.append("missing intent")
+    if not record.get("dialogue") or not isinstance(record.get("dialogue"), list):
+        errors.append("dialogue must be a non-empty list")
+    elif not record["dialogue"]:
+        errors.append("dialogue is empty")
+    else:
+        roles = {m.get("role") for m in record["dialogue"] if isinstance(m, dict)}
+        if "customer" not in roles:
+            errors.append("dialogue must contain a customer turn")
+
+    label = record.get("label", "positive")
+    if label not in ("positive", "negative"):
+        errors.append(f"unknown label: {label}")
+    quality = record.get("quality_score")
+    if quality is not None and not (0.0 <= float(quality) <= 1.0):
+        errors.append("quality_score out of range [0,1]")
+    return errors

@@ -30,7 +30,7 @@ class SalesRAGIndexer:
             timeout=settings.qdrant_timeout,
         )
         self.embedding_model = SentenceTransformer(settings.embedding_model)
-        self.collection_name = "sales_dialogues"
+        self.collection_name = settings.qdrant_sales_collection
         
     async def initialize_collection(self) -> None:
         """Initialize Qdrant collection for sales dialogues."""

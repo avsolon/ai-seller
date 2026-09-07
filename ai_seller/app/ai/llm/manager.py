@@ -1,12 +1,21 @@
 """LLM Manager - manages LLM providers and generation."""
 
-from typing import Any, Dict, Optional, Union
+import re
+from typing import Any, Dict, List, Optional, Union
 from dataclasses import dataclass
 
 from app.core.config import settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class LLMMessage:
+    """A single message in a chat-style LLM request (doc 10)."""
+
+    role: str
+    content: str
 
 
 @dataclass
@@ -19,6 +28,46 @@ class LLMResponse:
     tokens_output: int
     latency_ms: float
     metadata: Dict[str, Any]
+
+
+_RETRYABLE_HINTS = (
+    "timed out",
+    "timeout",
+    "temporarily unavailable",
+    "unavailable",
+    "service unavailable",
+    "network",
+    "connection refused",
+    "connect error",
+    "rate limit",
+    "too many requests",
+)
+
+
+def _is_retryable(exc: Exception) -> bool:
+    """Selective fallback policy: only infra errors trigger a fallback (doc 10).
+
+    Prompt/schema errors are deliberately NOT retried.
+    """
+    if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
+        return True
+    try:
+        import httpx
+    except Exception:  # pragma: no cover - depends on optional driver
+        httpx = None  # type: ignore
+
+    if httpx is not None:
+        if isinstance(exc, (httpx.TimeoutException, httpx.TransportError, httpx.NetworkError)):
+            return True
+        if isinstance(exc, httpx.HTTPStatusError):
+            return exc.response.status_code >= 500 or exc.response.status_code == 429
+
+    msg = str(exc).lower()
+    if any(hint in msg for hint in _RETRYABLE_HINTS):
+        return True
+    if re.search(r"\b(5\d\d|429)\b", msg):
+        return True
+    return False
 
 
 class LLMProvider:
@@ -304,8 +353,11 @@ class LLMManager:
             "ollama": OllamaProvider(),
             "gigachat": GigaChatProvider(),
         }
-        self.primary_provider = settings.llm_provider
-        self.fallback_provider = "ollama" if self.primary_provider != "ollama" else "gigachat"
+        self.primary_provider = settings.llm_primary or settings.llm_provider
+        if self.primary_provider not in self.providers:
+            self.primary_provider = settings.llm_provider
+        others = [name for name in self.providers if name != self.primary_provider]
+        self.fallback_provider = settings.llm_fallback or (others[0] if others else None)
 
     def get_provider(self, provider_name: Optional[str] = None) -> LLMProvider:
         """Get LLM provider by name."""
@@ -336,8 +388,9 @@ class LLMManager:
             )
         except Exception as e:
             logger.error(f"Primary provider error: {e}")
-            
-            if use_fallback:
+
+            # Only infra errors (timeout/unavailable/5xx/network/rate-limit) fall back
+            if use_fallback and self.fallback_provider and _is_retryable(e):
                 try:
                     fallback_provider = self.get_provider(self.fallback_provider)
                     logger.info(f"Falling back to {self.fallback_provider}")
@@ -350,8 +403,7 @@ class LLMManager:
                 except Exception as fallback_error:
                     logger.error(f"Fallback provider error: {fallback_error}")
                     raise
-            else:
-                raise
+            raise
 
     async def chat(
         self,
@@ -373,8 +425,8 @@ class LLMManager:
             )
         except Exception as e:
             logger.error(f"Primary provider chat error: {e}")
-            
-            if use_fallback:
+
+            if use_fallback and self.fallback_provider and _is_retryable(e):
                 try:
                     fallback_provider = self.get_provider(self.fallback_provider)
                     logger.info(f"Falling back to {self.fallback_provider}")
@@ -387,5 +439,4 @@ class LLMManager:
                 except Exception as fallback_error:
                     logger.error(f"Fallback provider chat error: {fallback_error}")
                     raise
-            else:
-                raise
+            raise

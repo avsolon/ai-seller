@@ -344,6 +344,55 @@ class PromptBuilder:
         
         return "\n".join(instructions)
 
+    async def build_messages(
+        self,
+        *,
+        state: Optional[Dict[str, Any]] = None,
+        rag_context: Optional[Dict[str, Any]] = None,
+        tool_context: Optional[List[Dict[str, Any]]] = None,
+        history: Optional[List[Dict[str, str]]] = None,
+        shop_name: str = "ORIONLIGHT",
+    ) -> List[Any]:
+        """Build a chat-style list of LLMMessages (doc 10): system + context + history."""
+        from app.ai.llm.manager import LLMMessage
+
+        state = state or {}
+        rag_context = rag_context or {}
+
+        system = self._format_system_prompt({"shop_name": shop_name})
+
+        state_block = []
+        state_block.append("CURRENT SALES STATE:")
+        for key in ("stage", "intent", "emotion", "customer_type"):
+            value = state.get(key)
+            if value:
+                state_block.append(f"{key.capitalize()}: {value}")
+        for key in ("vehicle", "need", "purchase"):
+            value = state.get(key)
+            if value:
+                state_block.append(f"{key.capitalize()}: {value}")
+
+        rag_text = self._format_rag_context(rag_context)
+        if rag_text:
+            state_block.append("\nSALES KNOWLEDGE:")
+            state_block.append(rag_text)
+
+        tools = tool_context or []
+        if tools:
+            state_block.append("\nVERIFIED BUSINESS DATA:")
+            for call in tools:
+                state_block.append(f"- {call.get('tool')}: {call.get('result')}")
+
+        messages: List[Any] = [
+            LLMMessage(role="system", content=system),
+            LLMMessage(role="system", content="\n".join(state_block)),
+        ]
+        for item in history or []:
+            messages.append(
+                LLMMessage(role=item.get("role", "user"), content=item.get("content", ""))
+            )
+        return messages
+
     async def build_chat_prompt(
         self,
         messages: List[Dict[str, str]],

@@ -41,9 +41,21 @@ class Settings(BaseSettings):
     qdrant_url: str = Field(default="http://localhost:6333", description="Qdrant URL")
     qdrant_api_key: Optional[str] = Field(default=None, description="Qdrant API key")
     qdrant_timeout: int = Field(default=30, description="Qdrant timeout in seconds")
+    qdrant_sales_collection: str = Field(
+        default="sales_knowledge", description="Qdrant collection for sales RAG"
+    )
+    qdrant_knowledge_collection: str = Field(
+        default="product_knowledge", description="Qdrant collection for knowledge RAG"
+    )
 
     # LLM Provider
     llm_provider: str = Field(default="ollama", description="Default LLM provider")
+    llm_primary: Optional[str] = Field(
+        default=None, description="Primary LLM provider (falls back to llm_provider)"
+    )
+    llm_fallback: Optional[str] = Field(
+        default=None, description="Fallback LLM provider (defaults to the other one)"
+    )
 
     # Ollama
     ollama_base_url: str = Field(

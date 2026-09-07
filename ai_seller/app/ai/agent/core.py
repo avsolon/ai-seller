@@ -35,6 +35,25 @@ logger = get_logger(__name__)
 FALLBACK_ACK = "Спасибо за сообщение! Я передал ваш вопрос. Менеджер свяжется с вами в ближайшее время."
 GENERATION_TIMEOUT = 8.0
 
+# Doc 10 policy: only these intents need full Sales RAG retrieval.
+RAG_REQUIRED_INTENTS = {
+    "PRODUCT_RECOMMENDATION",
+    "PRODUCT_COMPARISON",
+    "PRICE_OBJECTION",
+    "TRUST_OBJECTION",
+    "HESITATION",
+    "PURCHASE_INTENT",
+}
+
+# Knowledge RAG is useful for factual policy intents.
+RAG_KNOWLEDGE_INTENTS = {
+    "DELIVERY_QUERY",
+    "WARRANTY_QUERY",
+    "INSTALLATION_QUERY",
+    "TRUST_OBJECTION",
+    "PRODUCT_INFO",
+}
+
 STRATEGY_BY_INTENT: Dict[str, str] = {
     "GREETING": "greet_and_qualify",
     "VEHICLE_INFO": "collect_vehicle",
@@ -221,6 +240,13 @@ class SellerAgentCore:
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         patterns: List[Dict[str, Any]] = []
         knowledge: List[Dict[str, Any]] = []
+
+        intent = decision.intent
+        need_sales = intent is not None and intent.value in RAG_REQUIRED_INTENTS
+        need_knowledge = intent is not None and intent.value in RAG_KNOWLEDGE_INTENTS
+        if not need_sales and not need_knowledge:
+            return patterns, knowledge
+
         try:
             if self._retriever is not None:
                 retriever = self._retriever
@@ -228,20 +254,14 @@ class SellerAgentCore:
                 from app.ai.rag.retriever import RAGRetriever
 
                 retriever = RAGRetriever()
-            if decision.intent is not None:
+            if need_sales:
                 patterns = await retriever.search_sales_dialogues(
                     query=decision.rag_query or text,
-                    intent=decision.intent.value,
+                    intent=intent.value,
                     sales_state=decision.stage.value,
                     limit=3,
                 )
-            if decision.intent in (
-                CustomerIntent.DELIVERY_QUERY,
-                CustomerIntent.WARRANTY_QUERY,
-                CustomerIntent.INSTALLATION_QUERY,
-                CustomerIntent.TRUST_OBJECTION,
-                CustomerIntent.PRODUCT_INFO,
-            ):
+            if need_knowledge:
                 knowledge = await retriever.search_knowledge(query=text, limit=3)
         except Exception as e:
             logger.warning(f"RAG unavailable: {e}")
