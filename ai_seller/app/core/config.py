@@ -65,6 +65,18 @@ class Settings(BaseSettings):
         default="llama3.2:3b", description="Default Ollama model"
     )
 
+    # OpenAI-compatible API (self-hosted GigaChat / vLLM / OpenAI, etc.)
+    openai_base_url: Optional[str] = Field(
+        default=None,
+        description="OpenAI-compatible base URL, e.g. https://host/v1 (endpoint /chat/completions)",
+    )
+    openai_api_key: Optional[str] = Field(
+        default=None, description="OpenAI-compatible API key (sk-...)"
+    )
+    openai_model: str = Field(
+        default="Gigashlep/GigaChat-2-Max", description="OpenAI-compatible model name"
+    )
+
     # GigaChat
     gigachat_client_id: Optional[str] = Field(default=None, description="GigaChat client id")
     gigachat_client_secret: Optional[str] = Field(

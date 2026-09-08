@@ -17,13 +17,25 @@ PING_TIMEOUT = 12.0
 
 @router.get("/llm")
 async def check_llm() -> dict:
-    """Ping the configured LLM (GigaChat primary, Ollama fallback)."""
+    """Ping the configured LLM (primary provider, Ollama fallback)."""
     settings = get_settings()
+    provider_name = settings.llm_primary or settings.llm_provider
+
+    if provider_name == "openai":
+        model_label = settings.openai_model
+        configured = bool(settings.openai_base_url and settings.openai_api_key)
+    elif provider_name == "gigachat":
+        model_label = settings.gigachat_model
+        configured = bool(settings.gigachat_auth_key or settings.gigachat_client_id)
+    else:
+        model_label = settings.ollama_default_model
+        configured = True
+
     result = {
-        "provider": settings.llm_primary or settings.llm_provider,
+        "provider": provider_name,
         "fallback": settings.llm_fallback,
-        "model": settings.gigachat_model,
-        "configured": bool(settings.gigachat_auth_key or settings.gigachat_client_id),
+        "model": model_label,
+        "configured": configured,
         "ok": False,
         "error": None,
         "sample": None,

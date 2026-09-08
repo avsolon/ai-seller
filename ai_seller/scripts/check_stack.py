@@ -3,7 +3,7 @@
 Usage:
   python ai_seller/scripts/check_stack.py [--no-llm]
 
-Prints: config provider, GigaChat credentials presence, LLM ping, Qdrant
+Prints: config provider, credentials presence, LLM ping, Qdrant
 collections + counts, Redis ping, DB reachability.
 """
 
@@ -81,12 +81,22 @@ async def main() -> None:
     from app.core.config import get_settings
 
     s = get_settings()
-    _print("Provider config", True, f"primary={s.llm_primary or s.llm_provider}, fallback={s.llm_fallback}")
-    _print(
-        "GigaChat credentials",
-        bool(s.gigachat_auth_key or s.gigachat_client_id),
-        "AUTH_KEY set" if s.gigachat_auth_key else "missing",
-    )
+    provider = s.llm_primary or s.llm_provider
+    _print("Provider config", True, f"primary={provider}, fallback={s.llm_fallback}")
+    if provider == "openai":
+        _print(
+            "OpenAI-compatible credentials",
+            bool(s.openai_base_url and s.openai_api_key),
+            f"base_url={s.openai_base_url!r}, key={'set' if s.openai_api_key else 'missing'}",
+        )
+    elif provider == "gigachat":
+        _print(
+            "GigaChat credentials",
+            bool(s.gigachat_auth_key or s.gigachat_client_id),
+            "AUTH_KEY set" if s.gigachat_auth_key else "missing",
+        )
+    else:
+        _print("Ollama local", True, f"url={s.ollama_base_url}, model={s.ollama_default_model}")
     if not args.no_llm:
         await check_llm()
     await check_qdrant()

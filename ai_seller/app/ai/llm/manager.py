@@ -218,6 +218,120 @@ class OllamaProvider(LLMProvider):
             raise
 
 
+class OpenAICompatibleProvider(LLMProvider):
+    """OpenAI-compatible chat/completions provider.
+
+    Works with any API implementing OpenAI's /v1/chat/completions schema,
+    e.g. self-hosted GigaChat (gigachat-students.nsk.21-school.ru), vLLM, OpenAI.
+    """
+
+    def __init__(self):
+        """Initialize OpenAI-compatible provider."""
+        super().__init__("openai")
+        self.base_url = (settings.openai_base_url or "").rstrip("/")
+        self.api_key = settings.openai_api_key
+        self.default_model = settings.openai_model
+
+    def _endpoint(self) -> str:
+        if not self.base_url:
+            raise Exception("OPENAI_BASE_URL is not configured")
+        return f"{self.base_url}/chat/completions"
+
+    async def _complete(
+        self,
+        *,
+        prompt: Optional[str] = None,
+        messages: Optional[list] = None,
+        temperature: float,
+        max_tokens: int,
+        model: Optional[str],
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Shared implementation for generate() and chat()."""
+        import httpx
+        import time
+
+        model = model or self.default_model
+        if not self.api_key:
+            raise Exception("OPENAI_API_KEY is not configured")
+
+        body: Dict[str, Any] = {
+            "model": model,
+            "messages": messages if messages is not None else [{"role": "user", "content": prompt}],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            **kwargs,
+        }
+
+        start_time = time.time()
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(
+                    self._endpoint(),
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=body,
+                )
+
+                if response.status_code != 200:
+                    raise Exception(
+                        f"OpenAI-compatible API error: {response.status_code} - {response.text}"
+                    )
+
+                data = response.json()
+                usage = data.get("usage", {})
+
+                latency_ms = (time.time() - start_time) * 1000
+                return LLMResponse(
+                    text=data.get("choices", [{}])[0].get("message", {}).get("content", ""),
+                    provider=self.name,
+                    model=model,
+                    tokens_input=usage.get("prompt_tokens", 0),
+                    tokens_output=usage.get("completion_tokens", 0),
+                    latency_ms=latency_ms,
+                    metadata={"total_tokens": usage.get("total_tokens", 0)},
+                )
+        except Exception as e:
+            logger.error(f"OpenAI-compatible generation error: {e}")
+            raise
+
+    async def generate(
+        self,
+        prompt: str,
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        model: Optional[str] = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Generate text using the OpenAI-compatible API."""
+        return await self._complete(
+            prompt=prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            model=model,
+            **kwargs,
+        )
+
+    async def chat(
+        self,
+        messages: list,
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        model: Optional[str] = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Generate text using the OpenAI-compatible chat interface."""
+        return await self._complete(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            model=model,
+            **kwargs,
+        )
+
+
 class GigaChatProvider(LLMProvider):
     """GigaChat LLM Provider."""
 
@@ -368,6 +482,7 @@ class LLMManager:
         self.providers: Dict[str, LLMProvider] = {
             "ollama": OllamaProvider(),
             "gigachat": GigaChatProvider(),
+            "openai": OpenAICompatibleProvider(),
         }
         self.primary_provider = settings.llm_primary or settings.llm_provider
         if self.primary_provider not in self.providers:

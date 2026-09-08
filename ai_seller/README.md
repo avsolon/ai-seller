@@ -49,26 +49,47 @@ alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
-### Локальный запуск без Docker (проверенный путь)
+### Установка на Mac Intel без Docker (всё в `goinfre` — проверено)
 
-Подходит для машины без Docker/с ограниченной сетью. Всё выполняется из каталога `ai_seller/`:
+Машина без Docker, с ограниченной домашней квотой; весь проект и все инструменты
+живут в `goinfre` (на 42-школе это `/Users/<user>/goinfre` → `$HOME/goinfre`).
+Реально проверено на таком же Mac: Python miniforge + brew в `goinfre`,
+родной бинарник Qdrant, Ollama локально, а LLM — OpenAI-совместимый сервер
+GigaChat 21-школы (доступен только из сети 21-школы).
 
 ```bash
-cd ai_seller
-cp .env.example .env        # затем отредактируйте под себя (не коммитьте .env!)
+# пути: $HOME/goinfre = /Users/<user>/goinfre
+cd $HOME/goinfre
+git clone <repository-url> ai-seller
+cd ai-seller/ai_seller
+```
+
+**0. Инструменты — всё в `goinfre`:**
+```bash
+# Homebrew в goinfre (префикс $HOME/goinfre/.brew), затем:
+$HOME/goinfre/.brew/bin/brew install ollama
+
+# Miniforge в goinfre: скачать installer с https://github.com/conda-forge/miniforge/releases
+bash Miniforge3-MacOSX-x86_64.sh -p $HOME/goinfre/miniforge3
+$HOME/goinfre/miniforge3/bin/conda create -n python311 python=3.11 -y
+export PATH=$HOME/goinfre/miniforge3/envs/python311/bin:$PATH
+
+# Qdrant: бинарник в $HOME/goinfre/qdrant (см. https://github.com/qdrant/qdrant/releases)
+```
+
+**1. Окружение и зависимости:**
+```bash
+cp .env.example .env        # затем впишите свой OPENAI_API_KEY (ключ 21-школы) — НЕ коммитьте .env!
 export PYTHONPATH=$PWD
 pip install -e .
 ```
 
-**1. Векторная БД Qdrant** (родной бинарник, без Docker):
+**2. Qdrant** (родной бинарник, без Docker — API на http://localhost:6333):
 ```bash
-# скачать бинарник с https://github.com/qdrant/qdrant/releases и запустить:
-/path/to/qdrant            # API на http://localhost:6333
+cd $HOME/goinfre/qdrant && ./qdrant &
 ```
 
-**2. Postgres не обязателен** — пример конфигурации уже использует SQLite (`/tmp/ai_live.db`).
-
-**3. Таблицы + каталог:**
+**3. Таблицы + каталог** (Postgres не нужен — конфиг использует SQLite `/tmp/ai_live.db`):
 ```bash
 alembic upgrade head
 python scripts/import_catalog_db.py     # импортирует rag/knowledge/compatibility/catalog_orion_price_filled.csv
@@ -82,17 +103,36 @@ python -m rag.embeddings.build_index
 python -m rag.embeddings.build_knowledge_index
 ```
 
-**5. LLM — Ollama** (если GigaChat недоступен из сети):
+**5. LLM — OpenAI-совместимый GigaChat 21-школы** (уже стоит в `.env.example`):
+```bash
+# .env:
+#   LLM_PROVIDER=openai
+#   LLM_PRIMARY=openai
+#   LLM_FALLBACK=ollama
+#   OPENAI_BASE_URL=https://gigachat-students.nsk.21-school.ru/v1
+#   OPENAI_API_KEY=sk-...            # реальный ключ, выданный школой
+#   OPENAI_MODEL=Gigashlep/GigaChat-2-Max
+```
+Это обычный OpenAI-совместимый `/v1/chat/completions`; провайдер `openai` в
+`app/ai/llm/manager.py` умеет любой такой API.
+
+**6. Ollama — локальный fallback/офлайн-режим** (если сеть школы недоступна):
 ```bash
 ollama serve &
 ollama pull llama3.2:latest
+# если нет доступа к school-серверу, в .env переключите primary на ollama:
+#   LLM_PROVIDER=ollama  LLM_PRIMARY=ollama  LLM_FALLBACK=openai
+# (необязательно, чтобы модели не раздували домашнюю квоту:)
+# export OLLAMA_MODELS=$HOME/goinfre/ollama
 ```
 
-**6. Проверка стека и запуск:**
+**7. Проверка стека и запуск:**
 ```bash
 python scripts/check_stack.py
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 # виджет: http://localhost:8000/widget/demo.html
+# диагностика LLM:  curl http://localhost:8000/api/v1/diagnostics/llm
+# диагностика RAG:  curl http://localhost:8000/api/v1/diagnostics/rag
 ```
 
 ## 📚 Структура проекта
@@ -178,10 +218,13 @@ ai_seller/
 
 | Параметр | Описание | Значение по умолчанию |
 |----------|----------|----------------------|
-| `LLM_PROVIDER` | Провайдер LLM | `ollama` |
+| `LLM_PROVIDER` | Провайдер LLM (`ollama`/`gigachat`/`openai`/...) | `openai` |
+| `OPENAI_BASE_URL` | OpenAI-совместимый URL (напр. GigaChat 21-школы) | - |
+| `OPENAI_API_KEY` | Ключ OpenAI-совместимого API (`sk-...`) | - |
+| `OPENAI_MODEL` | Модель OpenAI-совместимого API | `Gigashlep/GigaChat-2-Max` |
 | `OLLAMA_BASE_URL` | URL Ollama | `http://localhost:11434` |
 | `OLLAMA_DEFAULT_MODEL` | Модель Ollama | `llama3.2:3b` |
-| `GIGACHAT_API_KEY` | API ключ GigaChat | - |
+| `GIGACHAT_API_KEY` | API ключ публичного GigaChat (geo-restricted) | - |
 | `DATABASE_URL` | URL базы данных | `postgresql+asyncpg://...` |
 | `REDIS_URL` | URL Redis | `redis://localhost:6379/0` |
 | `QDRANT_URL` | URL Qdrant | `http://localhost:6333` |
