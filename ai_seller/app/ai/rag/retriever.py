@@ -2,7 +2,8 @@
 
 from typing import Any, Dict, List, Optional
 
-from qdrant_client import QdrantClient, models
+from app.ai.rag.qdrant_async import AsyncQdrantClient
+from qdrant_client import models
 from qdrant_client.http import models as qdrant_models
 
 from app.core.config import settings
@@ -16,7 +17,7 @@ class RAGRetriever:
 
     def __init__(self):
         """Initialize the retriever."""
-        self.qdrant_client = QdrantClient(
+        self.qdrant_client = AsyncQdrantClient(
             url=settings.qdrant_url,
             api_key=settings.qdrant_api_key,
             timeout=settings.qdrant_timeout,
@@ -209,7 +210,7 @@ class RAGRetriever:
     async def get_knowledge_document(self, document_id: str) -> Optional[Dict[str, Any]]:
         """Get a specific knowledge document by ID."""
         try:
-            result = await self.qdrant_client.scroll(
+            points, _ = await self.qdrant_client.scroll(
                 collection_name=self.knowledge_collection,
                 limit=1,
                 with_payload=True,
@@ -224,8 +225,8 @@ class RAGRetriever:
                 ),
             )
             
-            if result[0]:
-                return result[0].payload
+            if points:
+                return dict(points[0].payload or {})
             return None
             
         except Exception as e:
@@ -235,7 +236,7 @@ class RAGRetriever:
     async def get_sales_dialogue(self, dialogue_id: str) -> Optional[Dict[str, Any]]:
         """Get a specific sales dialogue by ID."""
         try:
-            result = await self.qdrant_client.scroll(
+            points, _ = await self.qdrant_client.scroll(
                 collection_name=self.sales_collection,
                 limit=1,
                 with_payload=True,
@@ -250,8 +251,8 @@ class RAGRetriever:
                 ),
             )
             
-            if result[0]:
-                return result[0].payload
+            if points:
+                return dict(points[0].payload or {})
             return None
             
         except Exception as e:

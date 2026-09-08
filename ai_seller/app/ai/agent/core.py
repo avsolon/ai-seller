@@ -13,6 +13,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.agent.decision import AgentDecision
@@ -28,12 +29,12 @@ from app.ai.sales.taxonomy import CustomerIntent, SalesStage
 from app.ai.tools import ToolContext, build_default_registry
 from app.core.logging import get_logger
 from app.infrastructure.database.models.agent_run import AgentRun, ToolCall
-from app.infrastructure.database.models.conversation import Conversation
+from app.infrastructure.database.models.conversation import Conversation, Message
 
 logger = get_logger(__name__)
 
 FALLBACK_ACK = "Спасибо за сообщение! Я передал ваш вопрос. Менеджер свяжется с вами в ближайшее время."
-GENERATION_TIMEOUT = 8.0
+GENERATION_TIMEOUT = 120.0
 
 # Doc 10 policy: only these intents need full Sales RAG retrieval.
 RAG_REQUIRED_INTENTS = {
@@ -128,9 +129,17 @@ class SellerAgentCore:
         patterns, knowledge = await self.retrieve_sales_knowledge(decision, text)
         tools_facts = await self.call_tools(db, conversation, decision, state, products or [])
 
+        history_result = await db.execute(
+            select(Message)
+            .where(Message.conversation_id == conversation.id)
+            .order_by(Message.created_at.desc())
+            .limit(6)
+        )
+        history_messages = list(reversed(history_result.scalars().all()))
+
         reply, generation = await self.generate_response(
             decision, text, state, patterns, knowledge, tools_facts,
-            products or [], allow_llm,
+            products or [], allow_llm, history_messages,
         )
         issues = self.validate_response(reply, state)
 
@@ -366,17 +375,26 @@ class SellerAgentCore:
         tools_facts: List[Dict[str, Any]],
         products: List[Any],
         allow_llm: bool,
+        history_messages: Optional[List[Any]] = None,
     ) -> Tuple[str, Optional[Dict[str, Any]]]:
-        prompt = _build_prompt(decision, text, state, patterns, knowledge, tools_facts, products)
+        prompt = _build_prompt(
+            decision, text, state, patterns, knowledge, tools_facts, products,
+            history_messages or [],
+        )
         generation = None
         if allow_llm:
             generation = await self._call_llm(prompt)
         if generation is not None and generation["text"]:
+            logger.info(
+                f"LLM ok provider={generation.get('provider')} "
+                f"model={generation.get('model')} latency_ms={generation.get('latency_ms')}"
+            )
             return generation["text"], generation
 
         from app.ai.sales.transitions import next_question
 
         question = next_question(state) if state.missing_slots else None
+        logger.warning("LLM reply unavailable — using rule/state fallback")
         return question or FALLBACK_ACK, None
 
     async def _call_llm(self, prompt: str) -> Optional[Dict[str, Any]]:
@@ -520,6 +538,7 @@ def _build_prompt(
     knowledge: List[Dict[str, Any]],
     tools_facts: List[Dict[str, Any]],
     products: List[Any],
+    history_messages: Optional[List[Any]] = None,
 ) -> str:
     known = []
     if state.vehicle.is_identified:
@@ -530,6 +549,14 @@ def _build_prompt(
         known.append(f"Потребность: {state.need.primary_need}")
     if state.need.budget is not None:
         known.append(f"Бюджет: {state.need.budget} ₽")
+
+    # The last history item is usually the just-saved current message.
+    history = (history_messages or [])[:-1]
+    history_lines = []
+    for msg in history:
+        role = "Клиент" if getattr(msg, "sender_type", "") == "customer" else "Продавец"
+        history_lines.append(f"{role}: {getattr(msg, 'text', '')}")
+    history_block = "\n".join(history_lines)
 
     patterns_lines = []
     for p in patterns[:2]:
@@ -558,21 +585,25 @@ def _build_prompt(
         for p in products[:3]
     )
 
-    return f"""Ты — продавец-консультант светодиодных линз и би-лед модулей.
+    return f"""Ты — живой продавец-консультант магазина светодиодных линз и би-лед модулей.
 
 Правила:
-- Отвечай коротко (1-3 предложения), на русском.
-- НЕ выдумывай цену, наличие, характеристики или совместимость.
-- Если данных недостаточно — задай ОДИН уточняющий вопрос.
-- Не копируй паттерны дословно — перенимай подход.
+- Общайся естественно и по делу, как менеджер в чате: коротко, но живо.
+- Веди диалог с учётом ИСТОРИИ ниже: не повторяй уже заданные вопросы и сказанное.
+- НЕ выдумывай цену, наличие, характеристики, совместимость, гарантию или сроки.
+- Если данных не хватает — задай ОДИН уточняющий вопрос по существу.
+- Продавай мягко: выясни потребность, предложи вариант под клиента.
 
 Намерение: {decision.intent.value if decision.intent else 'general'}
 Этап: {decision.stage.value} (стратегия: {decision.response_strategy})
 
-Известно о клиенте:
-{chr(10).join(known) if known else '- ничего'}
+История диалога:
+{history_block if history_block else '- новый диалог'}
 
-Поведенческие паттерны (Sales RAG):
+Известно о клиенте:
+{chr(10).join(known) if known else '- пока ничего'}
+
+Поведенческие паттерны (Sales RAG, перенимай подход, не копируй):
 {patterns_block or '- нет'}
 
 Факты (Knowledge RAG, используй только их):

@@ -11,6 +11,7 @@ from app.api.routes.leads import router as leads_router
 from app.api.routes.orders import router as orders_router
 from app.api.routes.widget import router as widget_router
 from app.api.routes.telegram import router as telegram_router
+from app.api.routes.diagnostics import router as diagnostics_router
 
 # Create main API router
 api_router = APIRouter()
@@ -25,3 +26,4 @@ api_router.include_router(leads_router, prefix="/leads", tags=["leads"])
 api_router.include_router(orders_router, prefix="/orders", tags=["orders"])
 api_router.include_router(widget_router, prefix="/widget", tags=["widget"])
 api_router.include_router(telegram_router, prefix="/telegram", tags=["telegram"])
+api_router.include_router(diagnostics_router, prefix="/diagnostics", tags=["diagnostics"])

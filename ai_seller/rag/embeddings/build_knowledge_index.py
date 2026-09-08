@@ -5,6 +5,7 @@ Usage (after qdrant is up):
 """
 
 import asyncio
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -25,10 +26,10 @@ class KnowledgeRAGIndexer:
     """Index the knowledge base into a Qdrant 'product_knowledge' collection."""
 
     def __init__(self) -> None:
-        from qdrant_client import QdrantClient
+        from app.ai.rag.qdrant_async import AsyncQdrantClient
         from sentence_transformers import SentenceTransformer
 
-        self.qdrant_client = QdrantClient(
+        self.qdrant_client = AsyncQdrantClient(
             url=settings.qdrant_url,
             api_key=settings.qdrant_api_key,
             timeout=settings.qdrant_timeout,
@@ -82,7 +83,7 @@ class KnowledgeRAGIndexer:
             }
             points.append(
                 models.PointStruct(
-                    id=record["id"],
+                    id=str(uuid.uuid5(uuid.NAMESPACE_DNS, record["id"])),
                     vector=vector,
                     payload=payload,
                 )

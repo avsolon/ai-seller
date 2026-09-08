@@ -2,10 +2,12 @@
 
 import asyncio
 import json
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List
 
-from qdrant_client import QdrantClient, models
+from app.ai.rag.qdrant_async import AsyncQdrantClient
+from qdrant_client import models
 from sentence_transformers import SentenceTransformer
 
 from app.core.config import settings
@@ -24,7 +26,7 @@ class SalesRAGIndexer:
 
     def __init__(self):
         """Initialize the indexer."""
-        self.qdrant_client = QdrantClient(
+        self.qdrant_client = AsyncQdrantClient(
             url=settings.qdrant_url,
             api_key=settings.qdrant_api_key,
             timeout=settings.qdrant_timeout,
@@ -103,7 +105,7 @@ class SalesRAGIndexer:
 
             # Create point
             point = models.PointStruct(
-                id=str(dialogue_data.get("id")),
+                id=str(uuid.uuid5(uuid.NAMESPACE_DNS, str(dialogue_data.get("id")))),
                 vector=embedding,
                 payload=payload,
             )

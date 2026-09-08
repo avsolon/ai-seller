@@ -30,7 +30,8 @@ async def main() -> None:
     )
     args = parser.parse_args()
 
-    from qdrant_client import QdrantClient, models
+    from qdrant_client import models
+    from app.ai.rag.qdrant_async import AsyncQdrantClient
 
     from rag.embeddings import sales_dataset
 
@@ -48,7 +49,7 @@ async def main() -> None:
     for err in errors[:10]:
         logger.warning(f"Invalid {err}")
 
-    client = QdrantClient(
+    client = AsyncQdrantClient(
         url=settings.qdrant_url, api_key=settings.qdrant_api_key, timeout=settings.qdrant_timeout
     )
     collection = settings.qdrant_sales_collection
