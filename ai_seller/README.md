@@ -49,6 +49,52 @@ alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
+### Локальный запуск без Docker (проверенный путь)
+
+Подходит для машины без Docker/с ограниченной сетью. Всё выполняется из каталога `ai_seller/`:
+
+```bash
+cd ai_seller
+cp .env.example .env        # затем отредактируйте под себя (не коммитьте .env!)
+export PYTHONPATH=$PWD
+pip install -e .
+```
+
+**1. Векторная БД Qdrant** (родной бинарник, без Docker):
+```bash
+# скачать бинарник с https://github.com/qdrant/qdrant/releases и запустить:
+/path/to/qdrant            # API на http://localhost:6333
+```
+
+**2. Postgres не обязателен** — пример конфигурации уже использует SQLite (`/tmp/ai_live.db`).
+
+**3. Таблицы + каталог:**
+```bash
+alembic upgrade head
+python scripts/import_catalog_db.py     # импортирует rag/knowledge/compatibility/catalog_orion_price_filled.csv
+```
+
+**4. RAG-индексы (коллекции Qdrant):**
+```bash
+# сейлз-диалоги (jsonl) -> sales_knowledge:
+python -m rag.embeddings.build_index
+# база знаний rag/knowledge/... -> product_knowledge:
+python -m rag.embeddings.build_knowledge_index
+```
+
+**5. LLM — Ollama** (если GigaChat недоступен из сети):
+```bash
+ollama serve &
+ollama pull llama3.2:latest
+```
+
+**6. Проверка стека и запуск:**
+```bash
+python scripts/check_stack.py
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+# виджет: http://localhost:8000/widget/demo.html
+```
+
 ## 📚 Структура проекта
 
 ```
