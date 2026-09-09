@@ -46,11 +46,15 @@ class SearchProductsTool:
     async def execute(self, arguments: Dict[str, Any], context: ToolContext) -> ToolResult:
         budget = arguments.get("budget")
         category = arguments.get("category")
+        vehicle = context.state.vehicle
         products = await catalog_tools.search_products(
             context.db,
             budget=float(budget) if budget is not None else None,
             shop_id=context.conversation.shop_id,
             limit=arguments.get("limit", 3),
+            make=arguments.get("make") or vehicle.make,
+            model=arguments.get("model") or vehicle.model,
+            year=arguments.get("year") or vehicle.year,
         )
         if category:
             products = [p for p in products if (p.get("category") or "") == category]

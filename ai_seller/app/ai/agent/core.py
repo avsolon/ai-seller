@@ -17,7 +17,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.agent.decision import AgentDecision
-from app.ai.agent.intent_detector import detect, extract_facts, primary_objection
+from app.ai.agent.intent_detector import (
+    detect,
+    extract_facts,
+    is_purchase_selection,
+    primary_objection,
+)
 from app.ai.sales import (
     SalesState,
     SalesStateService,
@@ -181,6 +186,23 @@ class SellerAgentCore:
         facts = extract_facts(text)
         if intent == CustomerIntent.INSTALLATION_QUERY and "сам" in (text or "").lower():
             facts["installation_mode"] = "self"
+        if (
+            intent is None
+            and facts.get("vehicle_year") is not None
+            and state.vehicle.make
+            and state.vehicle.model
+            and not state.vehicle.year
+        ):
+            intent = CustomerIntent.PRODUCT_RECOMMENDATION
+        if (
+            intent in (
+                None,
+                CustomerIntent.PRODUCT_RECOMMENDATION,
+                CustomerIntent.PRODUCT_INFO,
+            )
+            and is_purchase_selection(text)
+        ):
+            intent = CustomerIntent.PURCHASE_INTENT
         return intent, facts
 
     async def update_sales_state(
@@ -201,6 +223,8 @@ class SellerAgentCore:
             state.vehicle.year = int(year)
         if facts.get("headlight_type"):
             state.vehicle.headlight_type = str(facts["headlight_type"])
+        if facts.get("current_lens"):
+            state.vehicle.current_lens = str(facts["current_lens"])
         if facts.get("budget"):
             state.need.budget = facts["budget"]  # type: ignore[assignment]
         if facts.get("primary_need"):
@@ -327,7 +351,10 @@ class SellerAgentCore:
         if (
             not results
             and products
-            and decision.intent == CustomerIntent.PRODUCT_RECOMMENDATION
+            and decision.intent in (
+                CustomerIntent.PRODUCT_RECOMMENDATION,
+                CustomerIntent.PRICE_QUERY,
+            )
         ):
             results.append(
                 {
@@ -356,6 +383,9 @@ class SellerAgentCore:
             return {
                 "budget": float(state.need.budget) if state.need.budget is not None else None,
                 "limit": 3,
+                "make": state.vehicle.make,
+                "model": state.vehicle.model,
+                "year": state.vehicle.year,
             }
         if name in ("get_product", "get_product_price", "get_product_stock"):
             if state.selected_product is not None and state.selected_product.product_id:
@@ -382,7 +412,10 @@ class SellerAgentCore:
             history_messages or [],
         )
         generation = None
-        if allow_llm:
+        should_use_llm = allow_llm and _can_use_llm(
+            decision, patterns, knowledge, tools_facts, products
+        )
+        if should_use_llm:
             generation = await self._call_llm(prompt)
         if generation is not None and generation["text"]:
             logger.info(
@@ -496,14 +529,59 @@ def _as_uuid(value: Any) -> UUID:
     return UUID(str(value))
 
 
+# Intents whose reply must be grounded in tool/RAG facts; the LLM is not
+# allowed to free-form such answers (it must never invent prices/fitment).
+_CONTENT_INTENTS = {
+    CustomerIntent.VEHICLE_COMPATIBILITY,
+    CustomerIntent.PRODUCT_RECOMMENDATION,
+    CustomerIntent.PRODUCT_COMPARISON,
+    CustomerIntent.PRODUCT_INFO,
+    CustomerIntent.PRICE_QUERY,
+    CustomerIntent.PRICE_OBJECTION,
+    CustomerIntent.PURCHASE_INTENT,
+}
+
+
+def _grounded(
+    patterns: List[Dict[str, Any]],
+    knowledge: List[Dict[str, Any]],
+    tools_facts: List[Dict[str, Any]],
+    products: List[Any],
+) -> bool:
+    if patterns or knowledge or products:
+        return True
+    for call in tools_facts:
+        result = call.get("result")
+        if not isinstance(result, dict):
+            continue
+        if result.get("products") or result.get("policy") or result.get("matches"):
+            return True
+        if call.get("tool") == "check_compatibility" and result.get("verified") is not None:
+            return True
+    return False
+
+
+def _can_use_llm(
+    decision: AgentDecision,
+    patterns: List[Dict[str, Any]],
+    knowledge: List[Dict[str, Any]],
+    tools_facts: List[Dict[str, Any]],
+    products: List[Any],
+) -> bool:
+    intent = decision.intent
+    if intent is not None and intent not in _CONTENT_INTENTS:
+        return True
+    return _grounded(patterns, knowledge, tools_facts, products)
+
+
 def _route_tools(intent: Optional[CustomerIntent]) -> List[str]:
     mapping = {
         CustomerIntent.VEHICLE_COMPATIBILITY: ["check_compatibility"],
         CustomerIntent.PRODUCT_RECOMMENDATION: ["search_products", "get_product_price"],
         CustomerIntent.PRODUCT_COMPARISON: ["search_products", "get_product_price"],
         CustomerIntent.PRODUCT_INFO: ["search_products"],
-        CustomerIntent.PRICE_QUERY: ["get_product_price"],
-        CustomerIntent.PRICE_OBJECTION: ["get_product_price"],
+        CustomerIntent.PRICE_QUERY: ["search_products", "get_product_price"],
+        CustomerIntent.PRICE_OBJECTION: ["search_products", "get_product_price"],
         CustomerIntent.TRUST_OBJECTION: ["get_warranty_info"],
         CustomerIntent.DELIVERY_QUERY: ["get_delivery_info"],
         CustomerIntent.WARRANTY_QUERY: ["get_warranty_info"],
@@ -528,6 +606,19 @@ def _build_rag_query(state: SalesState, intent: Optional[CustomerIntent]) -> str
     if state.need.budget is not None:
         parts.append(f"budget={state.need.budget}")
     return "; ".join(parts)
+
+
+def _strip_stock(value: Any) -> Any:
+    """Remove inventory counters recursively before anything is shown to the LLM."""
+    if isinstance(value, dict):
+        return {
+            k: _strip_stock(v)
+            for k, v in value.items()
+            if k not in ("stock_quantity", "quantity")
+        }
+    if isinstance(value, list):
+        return [_strip_stock(v) for v in value]
+    return value
 
 
 def _build_prompt(
@@ -577,22 +668,28 @@ def _build_prompt(
 
     tools_lines = []
     for call in tools_facts:
-        tools_lines.append(f"{call['tool']}: {json.dumps(call['result'], ensure_ascii=False)}")
+        tools_lines.append(
+            f"{call['tool']}: {json.dumps(_strip_stock(call['result']), ensure_ascii=False)}"
+        )
     tools_block = "\n".join(tools_lines)
 
     products_block = "\n".join(
-        f"- {p.name} — {float(p.price)} ₽ (в наличии {p.stock_quantity})"
+        f"- {p.name} — {float(p.price)} ₽"
         for p in products[:3]
     )
 
-    return f"""Ты — живой продавец-консультант магазина светодиодных линз и би-лед модулей.
+    return f"""Ты — профессиональный продавец-консультант магазина светодиодных линз и би-лед модулей.
+Твоя задача — не просто консультировать, а продать: подтвердить выбор клиента и довести до заказа и оплаты.
 
 Правила:
 - Общайся естественно и по делу, как менеджер в чате: коротко, но живо.
 - Веди диалог с учётом ИСТОРИИ ниже: не повторяй уже заданные вопросы и сказанное.
-- НЕ выдумывай цену, наличие, характеристики, совместимость, гарантию или сроки.
+- Все товары каталога ВСЕГДА в наличии. Никогда не говори «нет в наличии», «закончился», «отсутствует», «под заказ».
+- НЕ выдумывай цену, характеристики, совместимость, гарантию или сроки; бери их только из проверенных данных инструментов и «Доступных товаров».
+- Если в данных инструмента confirmed_for_vehicle=false (или такого поля нет) — это товар из общего ассортимента: не заявляй, что он точно совместим с авто клиента.
 - Если данных не хватает — задай ОДИН уточняющий вопрос по существу.
-- Продавай мягко: выясни потребность, предложи вариант под клиента.
+- Клиент выбрал вариант («первый», «этот», «беру», назвал модель) — не возвращайся к вопросам о потребности и бюджете: подтверди выбор и переходи к оформлению (количество, установка, доставка, оплата).
+- Продавай мягко, предлагай подходящие варианты и веди к оформлению заказа.
 
 Намерение: {decision.intent.value if decision.intent else 'general'}
 Этап: {decision.stage.value} (стратегия: {decision.response_strategy})

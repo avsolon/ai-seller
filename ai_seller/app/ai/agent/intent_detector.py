@@ -42,7 +42,8 @@ def detect(text: str) -> Optional[CustomerIntent]:
     if _kw(t, ("я подумаю", "подумаю", "посоветуюсь", "подумать", "дайте подумать")):
         return CustomerIntent.HESITATION
 
-    if _kw(t, ("чем",)) and _kw(t, ("лучше", "отличается", "разница", "сравн", "vs ")):
+    if _kw(t, ("чем",)) and _kw(t, ("лучше", "отличается", "отличают", "отличие",
+                                    "разница", "разниц", "сравн", "vs ", "или что")):
         return CustomerIntent.PRODUCT_COMPARISON
 
     if _kw(t, ("дорого", "дешевле", "уложиться в", "кусается", "скидк",
@@ -62,9 +63,9 @@ def detect(text: str) -> Optional[CustomerIntent]:
                "переходн", "разобрать фару", "подключ", "сложно")):
         return CustomerIntent.INSTALLATION_QUERY
 
-    if _kw(t, ("доставк", "отправ", "сегодня", "завтра", "срок", "наличи",
-               "когда привез", "получ", "куда достав", "город достав", "трек",
-               "есть в наличии", "нужно сегодня")):
+    if _kw(t, ("доставк", "отправ", "сегодня", "завтра", "срок", "когда привез",
+               "когда приед", "получ", "куда достав", "город достав", "трек",
+               "нужно сегодня")):
         return CustomerIntent.DELIVERY_QUERY
 
     if _kw(t, ("оформить заказ", "оформляем", "оформить", "оплатить", "заказать",
@@ -73,6 +74,10 @@ def detect(text: str) -> Optional[CustomerIntent]:
 
     if _kw(t, ("беру", "берём", "возьму", "беру этот", "готов купить")):
         return CustomerIntent.PURCHASE_INTENT
+
+    if _kw(t, ("сколько сто", "стоимост", "цена", "цену", "по цене", "прайс",
+               "почем", "за сколько", "ценник", "по деньгам", "с ценой")):
+        return CustomerIntent.PRICE_QUERY
 
     # --- vehicle related ----------------------------------------------
     has_brand = any(b in t for b in BRANDS)
@@ -101,17 +106,29 @@ def detect(text: str) -> Optional[CustomerIntent]:
     if _kw(t, ("посовет", "подбер", "какую выбрать", "какие линзы", "рекоменд",
                "главное", "не понимаю, какую", "не понимаю какую", "без переплат",
                "нормальн", "для дальнего", "мне нужна линза", "модель подойдет",
-               "вариант под", "что взять", "что выбрать")):
+               "вариант под", "что взять", "что выбрать", "ассортимент",
+               "какие есть", "что есть", "какие у вас есть", "что у вас есть",
+               "что в наличии", "в наличии", "наличие", "наличи", "из наличия",
+               "предлож", "что предложите", "что можешь предложить",
+               "подбери", "подобрать", "покажи", "какие модели", "какие варианты",
+               "несколько вариантов", "модель для моего", "модель для моей",
+               "подскажи какие", "перечисли", "каталог", "линейка",
+               "что можете предложить", "что подойдет для моего")):
         return CustomerIntent.PRODUCT_RECOMMENDATION
 
-    if _kw(t, ("хочу", "нужно", "надо", "хотелось бы", "свет был", "яркост",
-               "дальний свет", "ближний свет", "улучшить", "слабый свет",
-               "ширина", "света")):
-        return CustomerIntent.NEED_DISCOVERY
+    if _kw(t, ("нептун", "neptun", "плутон", "pluton", "space ship",
+               "спейс шип", "криптон", "krypton", "орион", "orion",
+               "orionlight", "вега", "vega", "a14", "a16", "a22", "a7", "a9")):
+        return CustomerIntent.PRODUCT_RECOMMENDATION
 
     if _kw(t, ("привет", "здравствуй", "добрый день", "добрый вечер", "доброе",
                "hi", "hello", "салют")):
         return CustomerIntent.GREETING
+
+    if _kw(t, ("хочу", "нужн", "надо", "хотелось бы", "свет был", "яркост",
+               "дальний свет", "ближний свет", "улучшить", "слабый свет",
+               "ширина", "ширин", "дальност", "света", "все сразу", "ярче")):
+        return CustomerIntent.NEED_DISCOVERY
 
     return None
 
@@ -125,7 +142,11 @@ def extract_facts(text: str) -> Dict[str, object]:
     if brand:
         facts["vehicle_make"] = brand.title()
         m = re.search(rf"{re.escape(brand)}\s+([a-zа-яё0-9][\w\-]*)", t)
-        if m:
+        if m and m.group(1) not in {
+            "подойд", "подойдут", "подходит", "нужн", "модули", "линз",
+            "сколько", "цена", "стоит", "есть", "для", "дай", "хочу",
+            "встанет", "сравнить",
+        }:
             facts["vehicle_model"] = m.group(1).strip()
 
     year = RE_YEAR.search(t)
@@ -147,15 +168,73 @@ def extract_facts(text: str) -> Dict[str, object]:
     elif _kw(t, ("led", "светодиодн")):
         facts["headlight_type"] = "led"
 
-    if _kw(t, ("свет был", "слабо", "ярко", "ярче", "света", "световой", " свет ", "свет")):
-        if "дальний" in t:
-            facts["primary_need"] = "дальний свет"
-        elif "ближний" in t:
-            facts["primary_need"] = "ближний свет"
-        else:
+    if _kw(t, ("не родн", "не штатн", "не заводск", "не оригинал")):
+        facts["current_lens"] = "aftermarket"
+    elif _kw(t, ("штатн", "родн", "заводск", "не менял", "не убирал",
+                 "ничего не менял", "как с завода", "с завода")):
+        facts["current_lens"] = "factory"
+    elif not _kw(t, ("хочу", "хотел", "хотелось", "заменить", "заменю",
+                     "поставить", "установить", "поставлю", "планир")):
+        if _kw(t, ("менял", "меняли", "переделан", "переделывал", "колхоз",
+                   "уже би", "стоят би", "би-лед", "билед",
+                   "после установки", "тюнинг")):
+            facts["current_lens"] = "aftermarket"
+
+    if _kw(t, ("все сразу", "всё сразу", "и то и то", "и то и другое",
+               "все вместе", "все хочу", "все опции", "по максимуму")):
+        facts["primary_need"] = "все сразу"
+    else:
+        need_terms = []
+        if "дальний" in t or _kw(t, ("дальност", "дальне", "дальн", "далеко")):
+            need_terms.append("дальний свет")
+        if "ближний" in t:
+            need_terms.append("ближний свет")
+        if _kw(t, ("ширин", "шире", "широк", "угол")):
+            need_terms.append("ширина света")
+        if _kw(t, ("яркост", "ярче", "ярко", "ярк")):
+            need_terms.append("яркость")
+        if need_terms:
+            facts["primary_need"] = " и ".join(need_terms) if len(need_terms) > 1 else need_terms[0]
+        elif _kw(t, ("свет", "слабо", "световой", "освещени", "светит",
+                     "плохо светил", "светил слабо")):
             facts["primary_need"] = "лучший свет"
 
     return facts
+
+
+_ORDINAL_VARIANT_RE = re.compile(
+    r"(?:перв|втор|трет|четверт|пят|шест)\w*"
+    r"\s+(?:вариант|модул|модел|товар|комплект|позици|опци)\w*"
+)
+_THIS_VARIANT_RE = re.compile(
+    r"(?:этот|эту|эта|эти|данн)\w*\s+(?:вариант|модул|модел|товар|комплект|линз|оптик)\w*"
+)
+_MODEL_TOKEN_RE = re.compile(
+    r"(?:neptun|нептун|pluton|плутон|vega|вега|krypton|криптон|space\s?ship|"
+    r"спейс\s?шип|orion\w*|орион\w*|a14|a16|a22|a7|a9)"
+)
+_PICK_VERB_RE = re.compile(r"(?:выбираю|выберу|выбрал\w*|остановлюсь|понравил\w*|нравится)")
+_QUESTION_HINT_RE = re.compile(
+    r"(?:сколько|цена|ценн|прайс|почем|стоит|стоимость|дорог|дешевле|"
+    r"подойд\w*|встанет|совместим\w*|можно|подробнее|какой|какая|какие|"
+    r"какое|отзыв|гарант\w*|достав\w*|оформ\w*|оплат\w*|отлич\w*|сравн\w*|"
+    r"разниц\w*)"
+)
+
+
+def is_purchase_selection(text: str) -> bool:
+    """True when the client is picking one of the offered options.
+
+    Conservative and used only as an upgrade inside core.analyze_intent for
+    intents that are still generic (None / recommendation / product info).
+    Question, price and comparison phrasing is deliberately excluded.
+    """
+    t = (text or "").lower()
+    if not t or _QUESTION_HINT_RE.search(t):
+        return False
+    if _ORDINAL_VARIANT_RE.search(t) or _THIS_VARIANT_RE.search(t):
+        return True
+    return bool(_PICK_VERB_RE.search(t) and _MODEL_TOKEN_RE.search(t))
 
 
 def primary_objection(text: str) -> Optional[str]:

@@ -124,6 +124,30 @@ class TestTools:
         products = result.data["products"]
         assert products and products[0]["price"] == 10900
 
+    async def test_search_unknown_vehicle_falls_back_to_assortment(self, db_session):
+        conversation = await make_env(db_session)
+        registry = build_default_registry()
+        result = await registry.get("search_products").execute(
+            {"make": "Audi", "model": "Q5"},
+            make_context(db_session, conversation),
+        )
+        assert result.success is True
+        products = result.data["products"]
+        assert products, "global fallback must not be empty"
+        assert all(p.get("confirmed_for_vehicle") is False for p in products)
+
+    async def test_search_confirmed_vehicle_marks_fitment(self, db_session):
+        conversation = await make_env(db_session, with_compat=True)
+        registry = build_default_registry()
+        result = await registry.get("search_products").execute(
+            {"make": "BMW", "model": "X5"},
+            make_context(db_session, conversation),
+        )
+        assert result.success is True
+        products = result.data["products"]
+        assert products
+        assert all(p.get("confirmed_for_vehicle") is True for p in products)
+
     async def test_check_compatibility_confirmed(self, db_session):
         conversation = await make_env(db_session, with_compat=True)
         registry = build_default_registry()

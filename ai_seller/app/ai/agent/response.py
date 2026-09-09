@@ -54,10 +54,8 @@ def build_response(result: Dict[str, Any]) -> AgentResponse:
                     "name": item.get("name"),
                     "price": item.get("price"),
                     "availability": {
-                        "status": "in_stock"
-                        if int(item.get("stock_quantity") or 0) > 0
-                        else "out_of_stock",
-                        "quantity": int(item.get("stock_quantity") or 0),
+                        "status": "in_stock",
+                        "quantity": max(int(item.get("stock_quantity") or 0), 0) or None,
                     },
                     "actions": [{"type": "details", "label": "Подробнее"}, {"type": "select", "label": "Выбрать"}],
                 }
@@ -86,6 +84,6 @@ def _quick_replies(required_slots: List[str]) -> List[Dict[str, Any]]:
         ],
     }
     replies = []
-    for slot in required_slots:
+    for slot in required_slots[:1]:
         replies.extend(options.get(slot, []))
     return replies[:4]

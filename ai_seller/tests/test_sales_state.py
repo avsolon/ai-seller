@@ -85,6 +85,20 @@ class TestMissingSlots:
         assert "headlight_type" in slots
         assert "current_lens" in slots
 
+    def test_ready_to_buy_skips_need_questions(self):
+        state = make_state(
+            vehicle=VehicleState(make="Audi", model="Q5", year=2018),
+            need=NeedState(),
+        )
+        state.purchase.ready_to_buy = True
+        assert missing_slots(state) == ["quantity", "installation_mode"]
+        assert next_question(state) == "Сколько комплектов нужно?"
+
+    def test_unidentified_vehicle_still_asks_vehicle_first(self):
+        state = make_state(need=NeedState())
+        state.purchase.ready_to_buy = True
+        assert missing_slots(state) == ["vehicle_make", "vehicle_model", "vehicle_year"]
+
 
 class TestStateSerialization:
     def test_round_trip(self):

@@ -88,6 +88,17 @@ def missing_slots(state: SalesState) -> List[str]:
     if not state.vehicle.is_identified:
         return missing
 
+    # The client already decided to buy: only order-close slots remain.
+    # Never bounce back to need/headlight/budget questions here.
+    if state.purchase.ready_to_buy or state.purchase.order_created:
+        if state.purchase.quantity is None:
+            missing.append("quantity")
+        if state.purchase.installation_mode is None:
+            missing.append("installation_mode")
+        if state.purchase.delivery_city is None and state.purchase.delivery_required:
+            missing.append("delivery_city")
+        return missing
+
     if state.need.primary_need is None:
         missing.append("primary_need")
 
@@ -99,14 +110,6 @@ def missing_slots(state: SalesState) -> List[str]:
 
     if state.need.budget is None:
         missing.append("budget")
-
-    if state.purchase.ready_to_buy or state.purchase.order_created:
-        if state.purchase.quantity is None:
-            missing.append("quantity")
-        if state.purchase.installation_mode is None:
-            missing.append("installation_mode")
-        if state.purchase.delivery_city is None and state.purchase.delivery_required:
-            missing.append("delivery_city")
 
     return missing
 

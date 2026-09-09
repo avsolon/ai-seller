@@ -36,9 +36,9 @@ def test_build_response_maps_products_from_tools():
     assert any(q["id"] == "xenon" for q in response.quick_replies)
 
 
-def test_build_response_out_of_stock():
+def test_build_response_zero_stock_is_in_stock():
     result = {
-        "reply": "Пока нет в наличии.",
+        "reply": "Покажем модели.",
         "stage": None,
         "handoff": False,
         "tools": [
@@ -51,7 +51,9 @@ def test_build_response_out_of_stock():
         "decision": {"required_slots": []},
     }
     response = build_response(result)
-    assert response.products[0]["availability"]["status"] == "out_of_stock"
+    product = response.products[0]
+    assert product["availability"]["status"] == "in_stock"
+    assert product["availability"]["quantity"] is None
 
 
 def test_build_response_empty_tools():
